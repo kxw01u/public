@@ -1,671 +1,847 @@
-
-import sys
-import csv
-import json
-import os
-from datetime import datetime, timedelta
-from functools import partial
-from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
-    QCheckBox, QHBoxLayout, QPushButton, QProgressBar, QComboBox, QDateEdit,
-    QMessageBox, QLineEdit, QToolButton, QStyle
+# todo_rev.py
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+    QPushButton, QHBoxLayout, QLineEdit, QFileDialog, QHeaderView, QFrame,
+    QStyledItemDelegate, QColorDialog, QComboBox, QDateEdit, QProgressBar, QStyle
 )
-from PyQt5.QtCore import Qt, QDate
+from PyQt6.QtGui import QPalette, QColor, QPainter, QTextDocument
+from PyQt6.QtCore import Qt, QByteArray, QDate
+import sys, os, json, random, datetime, re
 
-CSV_FILE = "tasks.csv"
-WIDTH_FILE = "column_widths.json"
-FIELDS = [
-    "Case #", "Project", "Nature", "Task Name", "Parent Case", "Ref#", "Dependency",
-    "Start Date", "End Date", "Weight"
-]
-STEPS = [
-    "1_NI", "2_PI", "3_PR", "4_PO", "5_Shipping",
-    "6_DC", "7_BRD", "8_DEV", "9_UAT", "10_Sig_off", "11_Delivered"
-]
-NATURE_OPTIONS = ["", "PA_Project-Assessment", "OA_Procurement", "DEV_Development"]
+ROLE_LEVEL = Qt.ItemDataRole.UserRole
+ROLE_CASE = Qt.ItemDataRole.UserRole + 1
+
+COL_PROJECT, COL_COLOR, COL_LEVEL = 0, 1, 2
+COL_ACTION = 3
+COL_DESC, COL_NATURE, COL_PRIORITY, COL_REF = 4, 5, 6, 7
+COL_START, COL_END, COL_WEIGHT = 8, 9, 10
+COL_LAST_UPDATE, COL_IDLE, COL_PIC, COL_REMARK = 11, 12, 13, 14
+COL_STEP_START = 15
+COL_STEP_END = COL_STEP_START + 9
+COL_PROGRESS = COL_STEP_END + 1
+
+HEADERS = [
+    "Project", "C", "Level", "Action", "Desc", "Nature", "Priority", "Ref#",
+    "Start", "End", "Weight", "Last Update", "Idle", "PIC", "Dep"
+] + [f"Step{i}" for i in range(1, 11)] + ["Progress"]
 
 
-class TaskManager(QWidget):
+NATURES = ["BA", "PM", "OA", "Infra", "DEV"]
+PRIORITY_COLORS = {"1": "#ffb3b3", "2": "#ffd580", "3": "#b3d1ff", "4": "#b3ffb3"}
+STEP_CYCLE = ["", "WIP", "Done", "N/A"]
+
+class ProjectDelegate(QStyledItemDelegate):
+    def __init__(self, tree):
+        super().__init__(tree)
+        self.tree = tree
+
+    def paint(self, painter, option, index):
+        project = index.data() or ""
+        case_tag = index.data(ROLE_CASE) or ""
+        col = index.column()
+        item = self.tree.itemFromIndex(index)
+
+        # detect Project & Priority columns by header text (robust to reordering)
+        try:
+            headers = [self.tree.headerItem().text(i) for i in range(self.tree.columnCount())]
+            project_col = headers.index("Project")
+            priority_col = headers.index("Priority")
+        except ValueError:
+            project_col, priority_col = COL_PROJECT, COL_PRIORITY
+
+        # base background: use per-cell BackgroundRole if set; otherwise:
+        bg = index.data(Qt.ItemDataRole.BackgroundRole)
+        if bg:
+            base_color = QColor(bg.color()) if hasattr(bg, "color") else QColor(bg)
+        else:
+            if col == project_col:
+                proj_name = item.text(project_col).strip() if item else ""
+                base_color = QColor(self.tree.window().color_map.get(proj_name, "#ffffff")) if proj_name else QColor("#ffffff")
+            elif col == priority_col:
+                try:
+                    ptxt = item.text(priority_col).strip()
+                    base_color = QColor(PRIORITY_COLORS.get(ptxt, "#ffffff"))
+                except Exception:
+                    base_color = QColor("#ffffff")
+            else:
+                base_color = option.palette.base().color()
+
+        # paint background (no hover/selection fill here)
+        painter.save()
+        painter.fillRect(option.rect, base_color)
+        painter.restore()
+
+        # draw text
+        if col == project_col:
+            if not project and not case_tag:
+                super().paint(painter, option, index)
+                return
+            is_parent = item is not None and item.childCount() > 0
+            bold = "bold" if is_parent else "normal"
+            html = f'<span style="color:#000;font-weight:{bold};">{project}</span>'
+            if case_tag:
+                html += f'<span style="color:#888;font-size:11px;font-style:italic;"> {case_tag}</span>'
+            doc = QTextDocument()
+            doc.setHtml(html)
+            painter.save()
+            painter.translate(option.rect.left() + 6, option.rect.top() + 4)
+            doc.drawContents(painter)
+            painter.restore()
+        else:
+            # default text rendering (selection/hover already made transparent via stylesheet)
+            super().paint(painter, option, index)
+
+
+
+class DragAwareTree(QTreeWidget):
+    def __init__(self, recompute_hook=None, right_click_handler=None):
+        super().__init__()
+        self.recompute_hook = recompute_hook
+        self.right_click_handler = right_click_handler
+
+        # Disable mouse tracking so hover events never trigger
+        self.setMouseTracking(False)
+        # Remove focus rectangle and hover effects from style
+        self.setStyleSheet("""
+            QTreeView::item:hover { background: transparent; }
+            QTreeView::item:selected:active { background: transparent; }
+            QTreeView::item:selected:!active { background: transparent; }
+            QTreeView::item { outline: none; }
+        """)
+
+    def dropEvent(self, event):
+        super().dropEvent(event)
+        self.recompute_levels()
+        if self.recompute_hook:
+            self.recompute_hook()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.RightButton and self.right_click_handler:
+            pos = e.pos()
+            it = self.itemAt(pos)
+            if it:
+                col = self.columnAt(pos.x())
+                self.right_click_handler(it, col)
+                return
+        super().mousePressEvent(e)
+        
+    def edit(self, index, trigger, event):
+    # Disable editing for Step1…10 cells
+        col = index.column()
+        if COL_STEP_START <= col <= COL_STEP_END:
+            return False
+        return super().edit(index, trigger, event)
+
+    def drawRow(self, painter, options, index):
+        # Strip hover/active state flags completely before painting
+        options.state &= ~QStyle.StateFlag.State_MouseOver
+        options.state &= ~QStyle.StateFlag.State_Active
+        super().drawRow(painter, options, index)
+
+    def recompute_levels(self):
+        def set_levels(it, lvl):
+            it.setData(COL_PROJECT, ROLE_LEVEL, lvl)
+            it.setText(COL_LEVEL, f"L{lvl}")
+            for i in range(it.childCount()):
+                set_levels(it.child(i), min(lvl + 1, 9))
+        for i in range(self.topLevelItemCount()):
+            set_levels(self.topLevelItem(i), 0)
+
+class RecordKeeper(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Task Manager with Sub-Tasks (v2)")
-        self.resize(1700, 680)
+        self.setWindowTitle("Record Keeper")
+        self.resize(1720, 880)
+        self.data_file = os.path.join(os.path.dirname(__file__), "records.json")
+        self.seq = 0
+        self.color_map = {}
+        self._updating = False
+        self.column_order = None
+        self.column_widths = None
+        self.header_state = None
 
-        # mappings by case string (stable across row insert/delete)
-        self.parent_map = {}   # child_case -> parent_case
-        self.children_map = {} # parent_case -> [child_case,...]
-        self.case_counters = {}
+        layout = QVBoxLayout(self)
+        top = QHBoxLayout(); layout.addLayout(top)
+        self.address = QLineEdit(self.data_file); self.address.setReadOnly(True)
+        self.btn_file = QPushButton("Change File")
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.VLine); sep.setStyleSheet("background:#ccc;width:1px;")
+        btn_style = "QPushButton{background:#0078d7;color:white;font-weight:bold;padding:6px 16px;border-radius:6px;border:none;}QPushButton:hover{background:#005fa3;}QPushButton:pressed{background:#004b82;}"
+        self.btn_add = QPushButton("➕ Add Root"); self.btn_add.setStyleSheet(btn_style)
+        self.btn_save = QPushButton("💾 Save"); self.btn_save.setStyleSheet(btn_style)
+        self.btn_refresh = QPushButton("🔄 Refresh"); self.btn_refresh.setStyleSheet(btn_style)
+        top.addWidget(self.address); top.addWidget(self.btn_file); top.addWidget(sep)
+        top.addWidget(self.btn_add); top.addWidget(self.btn_save); top.addWidget(self.btn_refresh); top.addStretch(1)
 
-        layout = QVBoxLayout()
-        self.setLayout(layout)
+        self.tree = DragAwareTree(recompute_hook=self.after_drop, right_click_handler=self.on_right_click_step)
+        self.tree.setMouseTracking(False)  # disables hover tracking
 
-        self.table = QTableWidget()
-        self.table.setColumnCount(len(FIELDS) + len(STEPS) + 1)
-        headers = FIELDS + STEPS + ["Progress"]
-        self.table.setHorizontalHeaderLabels(headers)
-        layout.addWidget(self.table)
+        layout.addWidget(self.tree)
+        self.tree.setHeaderLabels(HEADERS)
+        header = self.tree.header()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setSectionsMovable(True)
+        self.tree.setAlternatingRowColors(False)
+        self.tree.setItemDelegate(ProjectDelegate(self.tree))
+        self.apply_style()
+        self.set_default_widths()
+        self.set_row_height()
 
-        self.load_column_widths()
+        self.btn_add.clicked.connect(self.add_root)
+        self.btn_save.clicked.connect(self.save_all)
+        self.btn_refresh.clicked.connect(self.refresh)
+        self.btn_file.clicked.connect(self.change_file)
+        self.tree.itemChanged.connect(self.on_edit)
+        self.tree.itemClicked.connect(self.on_click)
+        header.sectionMoved.connect(self.capture_layout)
+        header.sectionResized.connect(self.capture_layout)
 
-        btn_layout = QHBoxLayout()
-        add_btn = QPushButton("Add Task")
-        save_btn = QPushButton("Save All")
-        add_btn.clicked.connect(self.add_task)
-        save_btn.clicked.connect(self.save_tasks)
-        btn_layout.addWidget(add_btn)
-        btn_layout.addWidget(save_btn)
-        layout.addLayout(btn_layout)
+        self.load_all()
+        self.restore_layout()
+        self.rebind_all_row_widgets()
+        self.apply_all_project_backgrounds()
+        self.refresh_all_progress_idle()
 
-        # single handler for weight edits
-        self.table.itemChanged.connect(self.handle_weight_change)
+    def set_row_height(self):
+        self.tree.setStyleSheet(self.tree.styleSheet() + " QTreeWidget::item { min-height: 32px; } ")
 
-        self.load_tasks()
+    def apply_style(self):
+        self.tree.setStyleSheet("""
+            QTreeWidget {
+                outline: none;
+                border: 1px solid #ccc;
+                gridline-color: #aaa;
+                alternate-background-color: #f9f9f9;
+                background: #ffffff;
+            }
+            QTreeView::item {
+                border-bottom: 1px solid #ccc;
+                border-right: 1px solid #ccc;
+                padding: 4px;
+            }
+            QTreeView::item:selected,
+            QTreeView::item:hover {
+                background: rgba(0, 0, 0, 0);  /* 100% transparent */
+                color: black;
+            }
+            QHeaderView::section {
+                background: #e9e9e9;
+                border: 1px solid #bbb;
+                padding: 4px;
+                font-weight: bold;
+            }
+        """)
+        pal = self.tree.palette()
+        pal.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))
+        pal.setColor(QPalette.ColorRole.AlternateBase, QColor("#f9f9f9"))
+        pal.setColor(QPalette.ColorRole.Highlight, QColor(0, 0, 0, 0))  # transparent
+        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#000000"))
+        self.tree.setPalette(pal)
 
-    # ---------- utilities ----------
-    def find_row_by_case(self, case):
-        if not case:
-            return None
-        for r in range(self.table.rowCount()):
-            item = self.table.item(r, 0)
-            if item and item.text() == case:
-                return r
-        return None
 
-    def get_case_at_row(self, row):
-        item = self.table.item(row, 0)
-        return item.text() if item else ""
 
-    def find_row_of_widget(self, widget):
-        # search the progress cell widget areas to locate which row contains this widget
-        for r in range(self.table.rowCount()):
-            cell_widget = self.table.cellWidget(r, len(FIELDS) + len(STEPS))
-            if cell_widget:
-                layout = cell_widget.layout()
-                for i in range(layout.count()):
-                    w = layout.itemAt(i).widget()
-                    if w is widget:
-                        return r
-        # also search task cell (for subtask buttons)
-        for r in range(self.table.rowCount()):
-            task_cell = self.table.cellWidget(r, 3)
-            if task_cell:
-                layout = task_cell.layout()
-                for i in range(layout.count()):
-                    w = layout.itemAt(i).widget()
-                    if w is widget:
-                        return r
-        return None
+    def set_default_widths(self):
+        widths = [
+            240, 40, 40, 40, 220, 110, 60, 120,
+            110, 110, 80, 160, 70, 120, 200
+        ] + [45]*10 + [150]
+        for i, w in enumerate(widths):
+            if i < self.tree.columnCount():
+                self.tree.setColumnWidth(i, w)
 
-    # ---------- row creation ----------
-    def add_task(self):
-        self._add_row(parent_case=None)
+    def next_seq(self): self.seq += 1; return self.seq
+    def rand_color(self): return "#{:06x}".format(random.randint(0, 0xFFFFFF))
 
-    def _add_row(self, parent_case=None, before_row=None):
-        """Add a row. If parent_case provided, this will be a sub-task of that parent_case.
-           If before_row provided, insert at that index; otherwise append."""
-        if before_row is None:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
+    def make_item(self, project="", level=0):
+        now = datetime.datetime.now().strftime("%Y/%m/%d %H:%M")
+        today = QDate.currentDate().toString("yyyy/MM/dd")
+        row = [project, "🎨", f"L{level}", "", "", "", "", "", today, today, "", now, "0", "", ""] + [""]*10 + [""]
+        it = QTreeWidgetItem(row)
+        for c in range(COL_STEP_START, COL_STEP_END + 1):
+            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            it.setTextAlignment(c, Qt.AlignmentFlag.AlignCenter)
+        it.setData(COL_PROJECT, ROLE_LEVEL, level)
+        it.setData(COL_PROJECT, ROLE_CASE, "")
+        it.setFlags(it.flags() | Qt.ItemFlag.ItemIsEditable)
+        self.setup_row_widgets(it)
+        self.update_progress(it)
+        return it
+
+    def setup_row_widgets(self, it):
+        # --- action buttons (+/-) ---
+        box = QWidget()
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        addb = QPushButton("+")
+        delb = QPushButton("-")
+        for b in (addb, delb):
+            b.setFlat(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet("font-weight:bold;font-size:14px;color:black;background:transparent;border:none;")
+        addb.clicked.connect(lambda: self.add_child(it))
+        delb.clicked.connect(lambda: self.del_item(it))
+        lay.addWidget(addb)
+        lay.addWidget(delb)
+        self.tree.setItemWidget(it, COL_ACTION, box)
+
+        # --- start/end date pickers ---
+        start_edit = QDateEdit()
+        start_edit.setDisplayFormat("yyyy/MM/dd")
+        start_edit.setCalendarPopup(True)
+        end_edit = QDateEdit()
+        end_edit.setDisplayFormat("yyyy/MM/dd")
+        end_edit.setCalendarPopup(True)
+        start_edit.setDate(QDate.currentDate())
+        end_edit.setDate(QDate.currentDate())
+        start_edit.dateChanged.connect(lambda _d, i=it: self.on_date_changed(i, True))
+        end_edit.dateChanged.connect(lambda _d, i=it: self.on_date_changed(i, False))
+        self.tree.setItemWidget(it, COL_START, start_edit)
+        self.tree.setItemWidget(it, COL_END, end_edit)
+
+        # --- full-block progress bar ---
+        pb = QProgressBar()
+        pb.setRange(0, 100)
+        pb.setValue(0)
+        pb.setTextVisible(True)
+        pb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pb.setStyleSheet("""
+            QProgressBar {
+                border: none;
+                text-align: center;
+                margin: 0;
+                padding: 0;
+                min-height: 28px;
+                max-height: 32px;
+            }
+            QProgressBar::chunk {
+                margin: 0;
+                border-radius: 3px;
+                background-color: #3b82f6;
+            }
+        """)
+        self.tree.setItemWidget(it, COL_PROGRESS, pb)
+
+
+    def rebind_all_row_widgets(self):
+        for it in self.iterate_items():
+            if not self.tree.itemWidget(it, COL_ACTION):
+                self.setup_row_widgets(it)
+
+
+    def iterate_items(self, parent=None):
+        arr = []
+        if parent is None:
+            for i in range(self.tree.topLevelItemCount()): arr.append(self.tree.topLevelItem(i))
         else:
-            row = before_row
-            self.table.insertRow(row)
+            for i in range(parent.childCount()): arr.append(parent.child(i))
+        for it in list(arr):
+            yield it
+            yield from self.iterate_items(it)
 
-        # Column 0: Case #
-        self.table.setItem(row, 0, QTableWidgetItem(""))
+    def add_root(self):
+        it = self.make_item("", 0)
+        self.tree.addTopLevelItem(it)
+        self.setup_row_widgets(it)          # ensure action buttons bound immediately
+        self.apply_all_project_backgrounds()
+        self.save_all()
 
-        # Column 1: Project
-        self.table.setItem(row, 1, QTableWidgetItem(""))
 
-        # Column 2: Nature combo
-        nature_combo = QComboBox()
-        nature_combo.addItems(NATURE_OPTIONS)
-        # avoid auto-generate case while loading: connect but will be harmless
-        nature_combo.currentTextChanged.connect(lambda _: self.generate_case_number_for_row(row))
-        self.table.setCellWidget(row, 2, nature_combo)
+    def add_child(self, parent):
+        lvl = (parent.data(COL_PROJECT, ROLE_LEVEL) or 0) + 1
+        proj = parent.text(COL_PROJECT).strip()
+        it = self.make_item(proj, lvl)
+        parent.addChild(it)
+        parent.setExpanded(True)
 
-        # Column 3: Task Name composite widget (QLineEdit + subtask button)
-        task_widget = QWidget()
-        task_layout = QHBoxLayout()
-        task_layout.setContentsMargins(2, 0, 2, 0)
-        task_layout.setSpacing(6)
+        # inherit PIC
+        pic_val = parent.text(COL_PIC).strip()
+        if pic_val:
+            it.setText(COL_PIC, pic_val)
 
-        name_edit = QLineEdit()
-        name_edit.setPlaceholderText("Task name")
-        name_edit.textChanged.connect(lambda _: None)  # placeholder, kept so it's editable
+        # assign case number
+        if proj:
+            if proj not in self.color_map:
+                self.color_map[proj] = self.rand_color()
+            case = f"{proj}_L{lvl}_{self.next_seq():02d}"
+            self.safe_set(it, ROLE_CASE, case)
+            self.apply_project_background(it, proj)
 
-        # Sub-task tool button with icon (small)
-        sub_btn = QToolButton()
-        try:
-            icon = self.style().standardIcon(QStyle.SP_FileDialogNewFolder)  # a plus-like icon
-            sub_btn.setIcon(icon)
-        except Exception:
-            sub_btn.setText("➕")
-        sub_btn.setToolTip("Add sub-task")
-        sub_btn.setFixedSize(24, 24)
-        sub_btn.clicked.connect(self.handle_subtask_button_clicked)
+        self.mark_bold(parent, True)
+        self.tree.recompute_levels()
 
-        task_layout.addWidget(name_edit)
-        task_layout.addWidget(sub_btn)
-        task_widget.setLayout(task_layout)
-        self.table.setCellWidget(row, 3, task_widget)
+        # 🔒 make parent’s steps read-only & refresh stage aggregation
+        self.lock_parent_steps(parent)
+        self.update_parent_stage_from_children(parent)
 
-        # Column 4: Parent Case
-        parent_item = QTableWidgetItem(parent_case or "")
-        self.table.setItem(row, 4, parent_item)
+        self.save_all()
 
-        # Column 5: Ref#
-        ref_item = QTableWidgetItem("")
-        ref_item.setBackground(Qt.yellow)
-        self.table.setItem(row, 5, ref_item)
+    def lock_parent_steps(self, parent):
+        # make parent step columns non-editable and visually dimmed
+        for c in range(COL_STEP_START, COL_STEP_END + 1):
+            parent.setFlags(parent.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            parent.setBackground(c, QColor("#f0f0f0"))
+    
+    def update_parent_stage_from_children(self, parent):
+        if parent.childCount() == 0:
+            return  # no aggregation needed
 
-        # Column 6: Dependency
-        dep_combo = QComboBox()
-        dep_combo.addItem("")
-        dep_combo.currentTextChanged.connect(lambda _: self.apply_dependency_to_row(row))
-        self.table.setCellWidget(row, 6, dep_combo)
-
-        # Column 7: Start Date
-        start_date = QDateEdit()
-        start_date.setCalendarPopup(True)
-        start_date.setDate(QDate.currentDate())
-        start_date.dateChanged.connect(lambda _: self.update_end_date_from_weight_by_row(row))
-        self.table.setCellWidget(row, 7, start_date)
-
-        # Column 8: End Date
-        end_date = QDateEdit()
-        end_date.setCalendarPopup(True)
-        end_date.setSpecialValueText("None")
-        end_date.setDate(QDate(2000, 1, 1))
-        end_date.setMinimumDate(QDate(2000, 1, 1))
-        end_date.dateChanged.connect(lambda _: [self.check_end_date(row), self.update_weight(row), self.update_parent_on_row_change(row)])
-        self.table.setCellWidget(row, 8, end_date)
-
-        # Column 9: Weight (editable QTableWidgetItem)
-        weight_item = QTableWidgetItem("")
-        self.table.setItem(row, 9, weight_item)
-
-        # Steps (checkboxes)
-        for i in range(len(STEPS)):
-            cb = QCheckBox()
-            cb.stateChanged.connect(lambda _, r=row: self.update_progress(r))
-            self.table.setCellWidget(row, len(FIELDS) + i, cb)
-
-        # Progress + Delete button in last cell
-        progress = QProgressBar()
-        progress.setRange(0, 100)
-        delete_btn = QPushButton("❌")
-        delete_btn.setFixedWidth(30)
-        delete_btn.setStyleSheet("color:red; font-weight:bold;")
-        delete_btn.clicked.connect(self.handle_delete_button_clicked)
-
-        container = QWidget()
-        hl = QHBoxLayout()
-        hl.setContentsMargins(2, 0, 2, 0)
-        hl.setSpacing(6)
-        hl.addWidget(progress)
-        hl.addWidget(delete_btn)
-        container.setLayout(hl)
-        self.table.setCellWidget(row, len(FIELDS) + len(STEPS), container)
-
-        # If this row is a sub-task (parent_case provided), hide subtask button and style name smaller & indented
-        if parent_case:
-            # set the name edit style to smaller and indented
-            name_edit.setStyleSheet("padding-left: 12px; font-size: 11px;")
-            sub_btn.setVisible(False)
-        else:
-            name_edit.setStyleSheet("")  # default
-
-        # refresh dependencies comboboxes
-        self.refresh_dependencies()
-
-        return row  # return the new row index
-
-    # ---------- sub-task handling ----------
-    def handle_subtask_button_clicked(self):
-        sender = self.sender()
-        row = self.find_row_of_widget(sender)
-        if row is None:
-            return
-        # add subtask below this row
-        parent_case = self.get_case_at_row(row)
-        insert_at = row + 1
-        new_row = self._add_row(parent_case=parent_case, before_row=insert_at)
-        # copy project and nature from parent to child
-        proj_item = self.table.item(row, 1)
-        if proj_item:
-            self.table.setItem(new_row, 1, QTableWidgetItem(proj_item.text()))
-        parent_nature_widget = self.table.cellWidget(row, 2)
-        child_nature_widget = self.table.cellWidget(new_row, 2)
-        if parent_nature_widget and child_nature_widget:
-            try:
-                child_nature_widget.blockSignals(True)
-                child_nature_widget.setCurrentText(parent_nature_widget.currentText())
-            finally:
-                child_nature_widget.blockSignals(False)
-        # generate case number for child
-        self.generate_case_number_for_row(new_row)
-        # update mapping by case strings
-        child_case = self.get_case_at_row(new_row)
-        if parent_case and child_case:
-            self.parent_map[child_case] = parent_case
-            self.children_map.setdefault(parent_case, []).append(child_case)
-        # refresh parent aggregates
-        self.update_parent_status_by_case(parent_case)
-
-    def add_subtask(self, parent_row):
-        # legacy support (not used)
-        self.handle_subtask_button_clicked()
-
-    # ---------- weight/date logic ----------
-    def business_days_inclusive(self, start_date, end_date):
-        if end_date < start_date:
-            return 0
-        count = 0
-        cur = start_date
-        while cur <= end_date:
-            if cur.weekday() < 5:
-                count += 1
-            cur += timedelta(days=1)
-        return count
-
-    def update_end_date_from_weight_by_row(self, row):
-        weight_item = self.table.item(row, 9)
-        if not weight_item:
-            return
-        text = weight_item.text().strip().lower()
-        start_widget = self.table.cellWidget(row, 7)
-        end_widget = self.table.cellWidget(row, 8)
-        if not text:
-            end_widget.setDate(QDate(2000, 1, 1))
-            return
-        start_date = start_widget.date().toPyDate()
-        if text.endswith("d"):
-            try:
-                days = int(text[:-1])
-                if days <= 0:
-                    end_widget.setDate(QDate(start_date.year, start_date.month, start_date.day))
-                else:
-                    current = start_date
-                    added = 1
-                    while added < days:
-                        current += timedelta(days=1)
-                        if current.weekday() < 5:
-                            added += 1
-                    end_widget.setDate(QDate(current.year, current.month, current.day))
-            except:
-                pass
-        elif text.endswith("w"):
-            try:
-                weeks = int(text[:-1])
-                end_date = start_date + timedelta(weeks=weeks)
-                end_widget.setDate(QDate(end_date.year, end_date.month, end_date.day))
-            except:
-                pass
-        self.update_weight(row)
-        # if this is a child, update parent's aggregate
-        case = self.get_case_at_row(row)
-        parent_case = self.parent_map.get(case)
-        if parent_case:
-            self.update_parent_status_by_case(parent_case)
-
-    def handle_weight_change(self, item):
-        if not item or item.column() != 9:
-            return
-        row = item.row()
-        # update end date from weight text
-        self.update_end_date_from_weight_by_row(row)
-
-    def update_weight(self, row):
-        start_widget = self.table.cellWidget(row, 7)
-        end_widget = self.table.cellWidget(row, 8)
-        weight_item = self.table.item(row, 9)
-        if not (start_widget and end_widget and weight_item):
-            return
-        start_date = start_widget.date().toPyDate()
-        end_date = end_widget.date().toPyDate()
-        if end_date.year == 2000:
-            weight_item.setText("")
-            return
-        bdays = self.business_days_inclusive(start_date, end_date)
-        weight_item.setText(f"{bdays}d")
-
-    # ---------- progress & roll-up ----------
-    def update_progress(self, row):
-        # calculate percent for this row
-        checked = 0
-        for i in range(len(STEPS)):
-            cb = self.table.cellWidget(row, len(FIELDS) + i)
-            if cb and cb.isChecked():
-                checked += 1
-        percent = int((checked / len(STEPS)) * 100) if len(STEPS) > 0 else 0
-        prog_widget = self.table.cellWidget(row, len(FIELDS) + len(STEPS))
-        if prog_widget:
-            # prog_widget is container with layout: [QProgressBar, DeleteBtn]
-            prog_bar = prog_widget.layout().itemAt(0).widget()
-            prog_bar.setValue(percent)
-
-        # if this row is a child, update parent roll-up
-        case = self.get_case_at_row(row)
-        parent_case = self.parent_map.get(case)
-        if parent_case:
-            self.update_parent_status_by_case(parent_case)
-
-    def update_parent_status_by_case(self, parent_case):
-        if not parent_case:
-            return
-        parent_row = self.find_row_by_case(parent_case)
-        if parent_row is None:
-            return
-        self.update_parent_status(parent_row)
-
-    def update_parent_status(self, parent_row):
-        parent_case = self.get_case_at_row(parent_row)
-        children_cases = self.children_map.get(parent_case, [])
-        if not children_cases:
-            # ensure parent checkboxes enabled (no children)
-            for i in range(len(STEPS)):
-                cb = self.table.cellWidget(parent_row, len(FIELDS) + i)
-                if cb:
-                    cb.setEnabled(True)
-                    cb.setStyleSheet("")
-            return
-
-        # gather start/end from children
-        start_dates = []
-        end_dates = []
-        child_rows = []
-        for c in children_cases:
-            r = self.find_row_by_case(c)
-            if r is None:
-                continue
-            child_rows.append(r)
-            s = self.table.cellWidget(r, 7).date().toPyDate()
-            e = self.table.cellWidget(r, 8).date().toPyDate()
-            # ignore sentinel end date
-            if e.year != 2000:
-                start_dates.append(s)
-                end_dates.append(e)
-
-        if start_dates and end_dates:
-            min_s = min(start_dates)
-            max_e = max(end_dates)
-            self.table.cellWidget(parent_row, 7).setDate(QDate(min_s.year, min_s.month, min_s.day))
-            self.table.cellWidget(parent_row, 8).setDate(QDate(max_e.year, max_e.month, max_e.day))
-            self.update_weight(parent_row)
-
-        # For each step, set parent's checkbox checked only if ALL children checked
-        for i in range(len(STEPS)):
-            all_checked = True
-            for r in child_rows:
-                cb = self.table.cellWidget(r, len(FIELDS) + i)
-                if cb and not cb.isChecked():
-                    all_checked = False
-                    break
-            parent_cb = self.table.cellWidget(parent_row, len(FIELDS) + i)
-            if parent_cb:
-                parent_cb.blockSignals(True)
-                parent_cb.setChecked(all_checked)
-                parent_cb.setEnabled(False)
-                parent_cb.setStyleSheet("background-color: lightgray;")
-                parent_cb.blockSignals(False)
-
-        # update parent's progress bar based on aggregated children? We'll set progress based on the parent's own steps (which now reflect children)
-        self.update_progress(parent_row)
-
-    def update_parent_on_row_change(self, row):
-        # when a row's end date changed manually, update weight and parent status if it is a child
-        case = self.get_case_at_row(row)
-        parent_case = self.parent_map.get(case)
-        if parent_case:
-            self.update_parent_status_by_case(parent_case)
-
-    # ---------- dependency handling ----------
-    def apply_dependency_to_row(self, row):
-        dep_combo = self.table.cellWidget(row, 6)
-        if not dep_combo:
-            return
-        dep_case = dep_combo.currentText()
-        if not dep_case:
-            return
-        # find row with that case and set start date same as that row's end date
-        r = self.find_row_by_case(dep_case)
-        if r is not None:
-            end_widget = self.table.cellWidget(r, 8)
-            if end_widget:
-                self.table.cellWidget(row, 7).setDate(end_widget.date())
-                self.update_weight(row)
-
-    def refresh_dependencies(self):
-        cases = [self.table.item(r, 0).text() for r in range(self.table.rowCount()) if self.table.item(r, 0)]
-        for r in range(self.table.rowCount()):
-            combo = self.table.cellWidget(r, 6)
-            if combo:
-                current = combo.currentText()
-                combo.blockSignals(True)
-                combo.clear()
-                combo.addItem("")
-                combo.addItems(cases)
-                combo.setCurrentText(current)
-                combo.blockSignals(False)
-
-    # ---------- deletion ----------
-    def handle_delete_button_clicked(self):
-        sender = self.sender()
-        row = self.find_row_of_widget(sender)
-        if row is None:
-            return
-        case = self.get_case_at_row(row)
-        if not case:
-            # no case, just remove row
-            self.table.removeRow(row)
-            self.refresh_dependencies()
-            return
-
-        # if this is a parent with children, ask whether to delete all
-        children = self.children_map.get(case, [])
-        if children:
-            reply = QMessageBox.question(self, "Delete", f"'{case}' has {len(children)} sub-task(s). Delete parent and all sub-tasks?",
-                                         QMessageBox.Yes | QMessageBox.No)
-            if reply != QMessageBox.Yes:
-                return
-            # delete children first
-            for child_case in list(children):
-                self.delete_row_by_case(child_case)
-        # delete the row itself
-        self.delete_row_by_case(case)
-        self.refresh_dependencies()
-
-    def delete_row_by_case(self, case):
-        # remove mapping entries
-        # remove children_map entry if present
-        if case in self.children_map:
-            del self.children_map[case]
-        # remove parent_map entries that reference this case
-        to_remove = [c for c, p in self.parent_map.items() if p == case or c == case]
-        for c in to_remove:
-            if c in self.parent_map:
-                del self.parent_map[c]
-        # find and remove row
-        row = self.find_row_by_case(case)
-        if row is not None:
-            self.table.removeRow(row)
-        # also remove this case from any children lists
-        for p, childs in list(self.children_map.items()):
-            self.children_map[p] = [x for x in childs if x != case]
-
-    # ---------- generate case ----------
-    def generate_case_number_for_row(self, row):
-        # only generate if Case # cell empty
-        item = self.table.item(row, 0)
-        if item and item.text().strip():
-            return
-        proj_item = self.table.item(row, 1)
-        nature_widget = self.table.cellWidget(row, 2)
-        proj = proj_item.text().strip() if proj_item else ""
-        nat = nature_widget.currentText().strip() if nature_widget else ""
-        if not proj or not nat:
-            return
-        prefix = f"{proj}_{nat[:2]}"
-        count = self.case_counters.get(prefix, 1)
-        case_number = f"{prefix}_{count:03}"
-        self.case_counters[prefix] = count + 1
-        self.table.setItem(row, 0, QTableWidgetItem(case_number))
-        # if this row has Parent Case set, register mapping
-        parent_case_item = self.table.item(row, 4)
-        parent_case = parent_case_item.text() if parent_case_item else ""
-        if parent_case:
-            self.parent_map[case_number] = parent_case
-            self.children_map.setdefault(parent_case, []).append(case_number)
-        self.refresh_dependencies()
-
-    # ---------- check end date ----------
-    def check_end_date(self, row):
-        end_widget = self.table.cellWidget(row, 8)
-        if end_widget:
-            dt = end_widget.date().toPyDate()
-            if dt.year == 2000:
-                end_widget.setStyleSheet("")
-                return
-            today = datetime.today().date()
-            if dt <= today:
-                end_widget.setStyleSheet("background-color: red;")
+        for c in range(COL_STEP_START, COL_STEP_END + 1):
+            child_statuses = [parent.child(i).text(c) for i in range(parent.childCount())]
+            if all(s in ("Done", "N/A") for s in child_statuses if s):
+                parent.setText(c, "Done")
+                self.color_step_cell(parent, c, "Done")
+            elif all(s in ("", "WIP") for s in child_statuses):
+                parent.setText(c, "")
+                self.color_step_cell(parent, c, "")
             else:
-                end_widget.setStyleSheet("")
+                # mixed states -> keep WIP
+                parent.setText(c, "WIP")
+                self.color_step_cell(parent, c, "WIP")
 
-    # ---------- save / load ----------
-    def save_tasks(self):
-        self.save_column_widths()
-        with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(FIELDS + ["Progress"] + STEPS)
-            for r in range(self.table.rowCount()):
-                rowvals = []
-                for i, field in enumerate(FIELDS):
-                    if field == "Nature":
-                        widget = self.table.cellWidget(r, i)
-                        rowvals.append(widget.currentText() if widget else "")
-                    elif field == "Task Name":
-                        widget = self.table.cellWidget(r, i)
-                        if widget:
-                            # QLineEdit is first widget
-                            edit = widget.layout().itemAt(0).widget()
-                            rowvals.append(edit.text())
-                        else:
-                            itm = self.table.item(r, i)
-                            rowvals.append(itm.text() if itm else "")
-                    elif field in ["Start Date", "End Date"]:
-                        date_widget = self.table.cellWidget(r, i)
-                        date = date_widget.date() if date_widget else QDate(2000,1,1)
-                        rowvals.append(date.toString("yyyy-MM-dd") if date.year() != 2000 else "")
-                    elif field == "Dependency":
-                        combo = self.table.cellWidget(r, i)
-                        rowvals.append(combo.currentText() if combo else "")
-                    else:
-                        itm = self.table.item(r, i)
-                        rowvals.append(itm.text() if itm else "")
-                # progress value
-                prog_widget = self.table.cellWidget(r, len(FIELDS) + len(STEPS))
-                prog_val = 0
-                if prog_widget:
-                    prog_val = prog_widget.layout().itemAt(0).widget().value()
-                rowvals.append(prog_val)
-                # steps yes/no
-                for i in range(len(STEPS)):
-                    cb = self.table.cellWidget(r, len(FIELDS) + i)
-                    rowvals.append("Yes" if cb and cb.isChecked() else "No")
-                writer.writerow(rowvals)
-        QMessageBox.information(self, "Saved", f"Tasks saved to {CSV_FILE}")
+        self.update_progress(parent)
 
-    def load_tasks(self):
-        if not os.path.exists(CSV_FILE):
+
+    def del_item(self, it):
+        par = it.parent()
+        if par: par.removeChild(it); self.mark_bold(par, par.childCount()>0)
+        else: self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(it))
+        self.save_all()
+
+    def on_click(self, it, col):
+        # 🎨 Color chooser
+        if col == COL_COLOR:
+            proj = it.text(COL_PROJECT).strip()
+            if not proj:
+                return
+            cur = QColor(self.color_map.get(proj, "#ffffff"))
+            color = QColorDialog.getColor(cur, self, "Select Color")
+            if color.isValid():
+                color_hex = color.name()
+                self.color_map[proj] = color_hex
+                self.apply_color_to_project(proj, color_hex)
+                it.setBackground(COL_PROJECT, QColor(color_hex))
+                self.tree.viewport().update()
+                self.save_all()
+                parent = it.parent()
+                if parent:
+                    self.update_parent_stage_from_children(parent)
+
+        # 📋 Nature drill-down
+        elif col == COL_NATURE:
+            cb = QComboBox()
+            cb.addItems(NATURES)
+            cur = it.text(COL_NATURE).strip()
+            if cur in NATURES:
+                cb.setCurrentText(cur)
+            cb.activated.connect(lambda _ix, i=it, w=cb: self.commit_combo(i, COL_NATURE, w))
+            self.tree.setItemWidget(it, COL_NATURE, cb)
+            cb.showPopup()
+
+        # 🔺 Priority drill-down
+        elif col == COL_PRIORITY:
+            cb = QComboBox()
+            cb.addItems(["1", "2", "3", "4"])
+            cur = it.text(COL_PRIORITY).strip()
+            if cur in {"1", "2", "3", "4"}:
+                cb.setCurrentText(cur)
+            cb.activated.connect(lambda _ix, i=it, w=cb: self.commit_priority(i, w))
+            self.tree.setItemWidget(it, COL_PRIORITY, cb)
+            cb.showPopup()
+
+        # 🧮 Step1 … 10 cycle (left click)
+        elif COL_STEP_START <= col <= COL_STEP_END:
+            val = it.text(col)
+            nxt = STEP_CYCLE[(STEP_CYCLE.index(val) + 1) % len(STEP_CYCLE)] if val in STEP_CYCLE else "WIP"
+            it.setText(col, nxt)
+            self.color_step_cell(it, col, nxt)
+            self.touch_last_update(it)
+            self.update_progress(it)
+            self.save_all()
+
+        # 📆 Weight update
+        elif col == COL_WEIGHT:
+            w = self.parse_weight_days(it.text(COL_WEIGHT))
+            se = self.tree.itemWidget(it, COL_START)
+            ee = self.tree.itemWidget(it, COL_END)
+            if se and ee and w is not None:
+                ee.setDate(self.add_workdays(se.date(), w))
+                it.setText(COL_END, ee.date().toString("yyyy/MM/dd"))
+                self.save_all()
+        
+        elif col == COL_PIC:
+            # Build dropdown of ALL existing PIC values (all rows, all levels)
+            cb = QComboBox()
+            cb.setEditable(True)  # allow manual entry
+
+            # Collect every non-empty PIC value from all items in the tree
+            pics = set()
+            for it2 in self.iterate_items():
+                val = it2.text(COL_PIC).strip()
+                if val:
+                    pics.add(val)
+
+            # Sort them nicely before adding to combo
+            cb.addItems(sorted(pics, key=str.lower))
+
+            # Pre-select current if exists
+            cur = it.text(COL_PIC).strip()
+            if cur and cur in pics:
+                cb.setCurrentText(cur)
+
+            # Save selection when changed
+            cb.activated.connect(lambda _ix, i=it, w=cb: self.commit_combo(i, COL_PIC, w))
+            self.tree.setItemWidget(it, COL_PIC, cb)
+            cb.showPopup()
+
+
+        elif col == COL_REMARK:  # now used for Dep column
+            cb = QComboBox()
+            cases = []
+            for i in range(self.tree.topLevelItemCount()):
+                for it in self.iterate_items(self.tree.topLevelItem(i)):
+                    cnum = it.data(COL_PROJECT, ROLE_CASE)
+                    if cnum:
+                        cases.append(cnum)
+            cb.addItems(sorted(set(cases)))
+            cur = it.text(COL_REMARK).strip()
+            if cur in cases:
+                cb.setCurrentText(cur)
+            cb.activated.connect(lambda _ix, i=it, w=cb: self.commit_combo(i, COL_REMARK, w))
+            self.tree.setItemWidget(it, COL_REMARK, cb)
+            cb.showPopup()
+
+
+    def on_right_click_step(self, it, col):
+        if not (COL_STEP_START <= col <= COL_STEP_END):
             return
-        # clear table
-        self.table.setRowCount(0)
-        with open(CSV_FILE, "r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            # first pass: add rows and populate fields
-            for row_data in reader:
-                # determine if this row is a sub-task by Parent Case column
-                parent_case = row_data.get("Parent Case", "").strip()
-                # append row
-                new_row = self._add_row(parent_case=parent_case)
-                # set fields
-                for i, field in enumerate(FIELDS):
-                    if field == "Nature":
-                        widget = self.table.cellWidget(new_row, i)
-                        if widget:
-                            widget.blockSignals(True)
-                            widget.setCurrentText(row_data.get(field, ""))
-                            widget.blockSignals(False)
-                    elif field == "Task Name":
-                        widget = self.table.cellWidget(new_row, i)
-                        if widget:
-                            edit = widget.layout().itemAt(0).widget()
-                            edit.setText(row_data.get(field, ""))
-                            # hide subtask button if parent_case present
-                            if parent_case:
-                                btn = widget.layout().itemAt(1).widget()
-                                if btn:
-                                    btn.setVisible(False)
-                                    edit.setStyleSheet("padding-left:12px; font-size:11px;")
-                    elif field in ["Start Date", "End Date"]:
-                        w = self.table.cellWidget(new_row, i)
-                        date_str = row_data.get(field, "")
-                        if date_str:
-                            try:
-                                w.setDate(QDate.fromString(date_str, "yyyy-MM-dd"))
-                            except:
-                                pass
-                    elif field == "Dependency":
-                        combo = self.table.cellWidget(new_row, i)
-                        if combo:
-                            combo.setCurrentText(row_data.get(field, ""))
-                    else:
-                        itm = self.table.item(new_row, i)
-                        if itm:
-                            itm.setText(row_data.get(field, ""))
-                # steps
-                for i, step in enumerate(STEPS):
-                    cb = self.table.cellWidget(new_row, len(FIELDS) + i)
-                    if cb:
-                        cb.setChecked(row_data.get(step, "No") == "Yes")
-                # progress and weight will be recalculated
-            # second pass: build parent/child maps based on 'Case #' and 'Parent Case'
-            for r in range(self.table.rowCount()):
-                case = self.get_case_at_row(r)
-                parent_case_item = self.table.item(r, 4)
-                parent_case = parent_case_item.text().strip() if parent_case_item else ""
-                if parent_case:
-                    self.parent_map[case] = parent_case
-                    self.children_map.setdefault(parent_case, []).append(case)
-            # final pass: update progress, weights and parent aggregates
-            for r in range(self.table.rowCount()):
-                self.update_progress(r)
-                self.update_weight(r)
-            # update parents
-            for parent_case in list(self.children_map.keys()):
-                self.update_parent_status_by_case(parent_case)
-            self.refresh_dependencies()
 
-    def save_column_widths(self):
-        widths = {i: self.table.columnWidth(i) for i in range(self.table.columnCount())}
-        with open(WIDTH_FILE, "w", encoding="utf-8") as f:
-            json.dump(widths, f)
+        # first: cycle the clicked column
+        cur = it.text(col)
+        nxt = STEP_CYCLE[(STEP_CYCLE.index(cur) + 1) % len(STEP_CYCLE)] if cur in STEP_CYCLE else "WIP"
+        it.setText(col, nxt)
+        self.color_step_cell(it, col, nxt)
 
-    def load_column_widths(self):
-        if not os.path.exists(WIDTH_FILE):
-            return
+        # second: all previous steps follow the same state
+        for c in range(COL_STEP_START, col):
+            it.setText(c, nxt)
+            self.color_step_cell(it, c, nxt)
+
+        self.touch_last_update(it)
+        self.update_progress(it)
+        self.save_all()
+        parent = it.parent()
+        if parent:
+            self.update_parent_stage_from_children(parent)
+
+
+    def color_step_cell(self, it, col, status):
+        if status == "Done":
+            # green (unchanged)
+            it.setBackground(col, QColor("#d0ffd0"))
+        elif status == "WIP":
+            # orange
+            it.setBackground(col, QColor("#ffcc80"))
+        elif status == "N/A":
+            # gray
+            it.setBackground(col, QColor("#d9d9d9"))
+        else:
+            # blank / reset
+            it.setBackground(col, QColor("#ffffff"))
+
+
+    def commit_combo(self, it, col, cb):
+        txt = cb.currentText().strip()
+        self.tree.removeItemWidget(it, col)
+        it.setText(col, txt)
+        self.touch_last_update(it)
+        self.save_all()
+
+    def commit_priority(self, it, cb):
+        txt = cb.currentText().strip()
+        self.tree.removeItemWidget(it, COL_PRIORITY)
+        it.setText(COL_PRIORITY, txt)
+        it.setBackground(COL_PRIORITY, QColor(PRIORITY_COLORS.get(txt, "#ffffff")))
+        self.touch_last_update(it)
+        self.save_all()
+
+    def on_date_changed(self, it, is_start):
+        se = self.tree.itemWidget(it, COL_START)
+        ee = self.tree.itemWidget(it, COL_END)
+        if not se or not ee: return
+        if is_start:
+            w = self.parse_weight_days(it.text(COL_WEIGHT))
+            if w is not None:
+                ee.setDate(self.add_workdays(se.date(), w))
+        it.setText(COL_START, se.date().toString("yyyy/MM/dd"))
+        it.setText(COL_END, ee.date().toString("yyyy/MM/dd"))
+        self.touch_last_update(it)
+        self.save_all()
+
+    def parse_weight_days(self, text):
+        if not text: return None
+        m = re.match(r"\s*(\d+)\s*[dD]\s*$", text)
+        return int(m.group(1)) if m else None
+
+    def add_workdays(self, qdate, n):
+        d = QDate(qdate); step = 1 if n >= 0 else -1; remaining = abs(n)
+        while remaining > 0:
+            d = d.addDays(step)
+            if d.dayOfWeek() <= 5: remaining -= 1
+        return d
+
+    def on_edit(self, it, col):
+        if self._updating: return
+        if col == COL_PROJECT:
+            proj = it.text(COL_PROJECT).strip()
+            lvl = it.data(COL_PROJECT, ROLE_LEVEL) or 0
+            if proj and proj not in self.color_map: self.color_map[proj] = self.rand_color()
+            self.apply_project_background(it, proj)
+            old = it.data(COL_PROJECT, ROLE_CASE)
+            suffix = old.split("_")[-1] if old else f"{self.next_seq():02d}"
+            case = f"{proj}_L{lvl}_{suffix}"
+            self.safe_set(it, ROLE_CASE, case)
+            self.tree.viewport().update()
+            self.touch_last_update(it)
+            self.save_all()
+        elif col == COL_PRIORITY:
+            txt = it.text(COL_PRIORITY).strip()
+            it.setBackground(COL_PRIORITY, QColor(PRIORITY_COLORS.get(txt, "#ffffff")))
+            self.touch_last_update(it); self.save_all()
+        elif col == COL_WEIGHT:
+            w = self.parse_weight_days(it.text(COL_WEIGHT))
+            se = self.tree.itemWidget(it, COL_START); ee = self.tree.itemWidget(it, COL_END)
+            if se and ee and w is not None:
+                ee.setDate(self.add_workdays(se.date(), w))
+                it.setText(COL_END, ee.date().toString("yyyy/MM/dd"))
+            self.touch_last_update(it); self.save_all()
+        elif COL_STEP_START <= col <= COL_STEP_END:
+            self.touch_last_update(it); self.update_progress(it); self.save_all()
+        else:
+            self.touch_last_update(it); self.save_all()
+
+    def touch_last_update(self, it):
+        now = datetime.datetime.now().strftime("%Y/%m/%d %H:%M")
+        it.setText(COL_LAST_UPDATE, now)
+        self.update_idle(it)
+
+    def update_idle(self, it):
+        s = it.text(COL_LAST_UPDATE).strip()
         try:
-            with open(WIDTH_FILE, "r", encoding="utf-8") as f:
-                widths = json.load(f)
-            for i, w in widths.items():
-                self.table.setColumnWidth(int(i), int(w))
+            dt = datetime.datetime.strptime(s, "%Y/%m/%d %H:%M")
+            days = (datetime.datetime.now() - dt).days
+            it.setText(COL_IDLE, str(days))
         except:
-            pass
+            it.setText(COL_IDLE, "")
 
+    def refresh_all_progress_idle(self):
+        for it in self.iterate_items():
+            self.update_progress(it)
+            self.update_idle(it)
+
+    def update_progress(self, it):
+        total_steps = COL_STEP_END - COL_STEP_START + 1
+        done = 0
+        for c in range(COL_STEP_START, COL_STEP_END + 1):
+            val = it.text(c)
+            if val in ("Done", "N/A"):
+                done += 1
+        pct = int((done / total_steps) * 100)
+
+        pb = self.tree.itemWidget(it, COL_PROGRESS)
+        if pb:
+            pb.setValue(pct)
+            if pct >= 100:
+                pb.setStyleSheet("""
+                    QProgressBar {
+                        border: none;
+                        text-align: center;
+                        margin: 0;
+                        padding: 0;
+                        min-height: 28px;
+                        max-height: 28px;
+                    }
+                    QProgressBar::chunk {
+                        margin: 0;
+                        border-radius: 3px;
+                        background-color: #16a34a; /* green */
+                    }
+                """)
+            else:
+                pb.setStyleSheet("""
+                    QProgressBar {
+                        border: none;
+                        text-align: center;
+                        margin: 0;
+                        padding: 0;
+                        min-height: 28px;
+                        max-height: 28px;
+                    }
+                    QProgressBar::chunk {
+                        margin: 0;
+                        border-radius: 3px;
+                        background-color: #3b82f6; /* blue */
+                    }
+                """)
+
+
+    def mark_bold(self, it, bold=True):
+        f = it.font(COL_PROJECT); f.setBold(bold); it.setFont(COL_PROJECT, f)
+
+    def after_drop(self):
+        def update(it):
+            proj = it.text(COL_PROJECT).strip()
+            lvl = it.data(COL_PROJECT, ROLE_LEVEL) or 0
+            case = it.data(COL_PROJECT, ROLE_CASE)
+            if proj and case:
+                suffix = case.split("_")[-1]
+                self.safe_set(it, ROLE_CASE, f"{proj}_L{lvl}_{suffix}")
+            for i in range(it.childCount()): update(it.child(i))
+        for i in range(self.tree.topLevelItemCount()): update(self.tree.topLevelItem(i))
+        self.save_all()
+
+    def safe_set(self, it, role, val):
+        self._updating = True; self.tree.blockSignals(True)
+        it.setData(COL_PROJECT, role, val)
+        self.tree.blockSignals(False); self._updating = False
+
+    def apply_color_to_project(self, proj, color_hex):
+        for it in self.iterate_items():
+            if it.text(COL_PROJECT).strip() == proj:
+                it.setBackground(COL_PROJECT, QColor(color_hex))
+    def apply_project_background(self, it, proj):
+        c = self.color_map.get(proj)
+        if c: it.setBackground(COL_PROJECT, QColor(c))
+    def apply_all_project_backgrounds(self):
+        for it in self.iterate_items():
+            self.apply_project_background(it, it.text(COL_PROJECT).strip())
+
+    def capture_layout(self, *_):
+        h = self.tree.header()
+        self.column_order = [h.visualIndex(i) for i in range(self.tree.columnCount())]
+        self.column_widths = [h.sectionSize(i) for i in range(self.tree.columnCount())]
+        try:
+            st = h.saveState()
+            self.header_state = (bytes(st).hex()) if hasattr(st, "__bytes__") else st.data().hex()
+        except: self.header_state = None
+
+    def restore_layout(self):
+        h = self.tree.header()
+        if self.header_state:
+            try:
+                ba = QByteArray.fromHex(bytes(self.header_state, "utf-8"))
+                h.restoreState(ba); return
+            except: pass
+        if self.column_order and len(self.column_order) == self.tree.columnCount():
+            for logical, visual in reversed(list(enumerate(self.column_order))):
+                cur = h.visualIndex(logical)
+                if cur != visual: h.moveSection(cur, visual)
+        if self.column_widths and len(self.column_widths) == self.tree.columnCount():
+            for i, w in enumerate(self.column_widths): self.tree.setColumnWidth(i, w)
+
+    def dump_tree(self, parent=None):
+        items = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())] if not parent else [parent.child(i) for i in range(parent.childCount())]
+        arr = []
+        for it in items:
+            arr.append({
+                "values": [it.text(i) for i in range(self.tree.columnCount())],
+                "level": it.data(COL_PROJECT, ROLE_LEVEL),
+                "case": it.data(COL_PROJECT, ROLE_CASE)
+            })
+            kids = self.dump_tree(it)
+            if kids: arr[-1]["children"] = kids
+        return arr
+
+    def restore_tree(self, data, parent=None):
+        self.tree.blockSignals(True)
+        try:
+            for d in data:
+                proj = d["values"][COL_PROJECT]; lvl = d.get("level", 0)
+                it = self.make_item(proj, lvl)
+                for i, v in enumerate(d["values"]):
+                    if i < self.tree.columnCount(): it.setText(i, v)
+                self.safe_set(it, ROLE_CASE, d.get("case", ""))
+                if parent: parent.addChild(it)
+                else: self.tree.addTopLevelItem(it)
+                self.setup_row_widgets(it)
+                se = self.tree.itemWidget(it, COL_START); ee = self.tree.itemWidget(it, COL_END)
+                try:
+                    sd = QDate.fromString(it.text(COL_START), "yyyy/MM/dd")
+                    ed = QDate.fromString(it.text(COL_END), "yyyy/MM/dd")
+                    if sd.isValid(): se.setDate(sd)
+                    if ed.isValid(): ee.setDate(ed)
+                except: pass
+                ptxt = it.text(COL_PRIORITY).strip()
+                it.setBackground(COL_PRIORITY, QColor(PRIORITY_COLORS.get(ptxt, "#ffffff")))
+                for c in range(COL_STEP_START, COL_STEP_END+1):
+                    self.color_step_cell(it, c, it.text(c))
+                self.update_progress(it)
+                if it.childCount() > 0: self.mark_bold(it, True)
+                it.setExpanded(True)
+                if "children" in d:
+                    self.restore_tree(d["children"], it)
+        finally:
+            self.tree.blockSignals(False)
+        self.tree.recompute_levels()
+
+    def save_all(self):
+        self.capture_layout()
+        geom_hex = self.saveGeometry().data().hex()
+        data = {
+            "seq": self.seq,
+            "colors": self.color_map,
+            "records": self.dump_tree(),
+            "column_order": self.column_order,
+            "column_widths": self.column_widths,
+            "header_state": self.header_state,
+            "window_geometry": geom_hex
+        }
+        with open(self.data_file, "w", encoding="utf-8") as f: json.dump(data, f, indent=2, ensure_ascii=False)
+
+    def load_all(self):
+        if not os.path.exists(self.data_file): return
+        try:
+            with open(self.data_file, "r", encoding="utf-8") as f: d = json.load(f)
+            self.seq = d.get("seq", 0)
+            self.color_map = d.get("colors", {})
+            self.column_order = d.get("column_order")
+            self.column_widths = d.get("column_widths")
+            self.header_state = d.get("header_state")
+            geom = d.get("window_geometry")
+            self.tree.clear()
+            self.restore_tree(d.get("records", []))
+            if geom:
+                try:
+                    ba = QByteArray.fromHex(bytes(geom, "utf-8"))
+                    self.restoreGeometry(ba)
+                except:
+                    try:
+                        self.restoreGeometry(QByteArray(bytes.fromhex(geom)))
+                    except:
+                        pass
+        except Exception as e:
+            print("load fail", e)
+
+    def refresh(self):
+        self.save_all()
+        self.load_all()
+        self.restore_layout()
+        self.rebind_all_row_widgets()
+        self.apply_all_project_backgrounds()
+        self.refresh_all_progress_idle()
+        self.tree.viewport().update()
+
+    def change_file(self):
+        fn, _ = QFileDialog.getSaveFileName(self, "Choose File", self.data_file, "JSON Files (*.json)")
+        if fn:
+            self.data_file = fn
+            self.address.setText(fn)
+            self.save_all()
+
+    def closeEvent(self, e):
+        self.save_all(); e.accept()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = TaskManager()
-    window.show()
-    sys.exit(app.exec_())
+    w = RecordKeeper(); w.show()
+    sys.exit(app.exec())
