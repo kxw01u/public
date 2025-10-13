@@ -697,22 +697,41 @@ class RecordKeeper(QWidget):
                 if parent: parent.addChild(it)
                 else: self.tree.addTopLevelItem(it)
                 self.setup_row_widgets(it)
-                se = self.tree.itemWidget(it, COL_START); ee = self.tree.itemWidget(it, COL_END)
+
+                # Restore start / end dates
+                se = self.tree.itemWidget(it, COL_START)
+                ee = self.tree.itemWidget(it, COL_END)
                 try:
                     sd = QDate.fromString(it.text(COL_START), "yyyy/MM/dd")
                     ed = QDate.fromString(it.text(COL_END), "yyyy/MM/dd")
                     if sd.isValid(): se.setDate(sd)
                     if ed.isValid(): ee.setDate(ed)
-                except: pass
+                except:
+                    pass
+
+                # Restore priority background
                 ptxt = it.text(COL_PRIORITY).strip()
                 it.setBackground(COL_PRIORITY, QColor(PRIORITY_COLORS.get(ptxt, "#ffffff")))
-                for c in range(COL_STEP_START, COL_STEP_END+1):
+
+                # Restore PIC (no overwrite)
+                pic_val = it.text(COL_PIC).strip()
+                if pic_val:
+                    it.setText(COL_PIC, pic_val)
+
+                # Restore color for each step and progress bar
+                for c in range(COL_STEP_START, COL_STEP_END + 1):
                     self.color_step_cell(it, c, it.text(c))
                 self.update_progress(it)
-                if it.childCount() > 0: self.mark_bold(it, True)
+
+                # Mark bold and expand
+                if it.childCount() > 0:
+                    self.mark_bold(it, True)
                 it.setExpanded(True)
+
+                # Recurse children
                 if "children" in d:
                     self.restore_tree(d["children"], it)
+
         finally:
             self.tree.blockSignals(False)
         self.tree.recompute_levels()
