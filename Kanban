@@ -3,15 +3,19 @@ import re
 import csv
 import uuid
 import os
+import traceback
 from datetime import timedelta, date
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QPushButton, QFrame, QScrollArea, 
                              QLineEdit, QColorDialog, QSizePolicy, 
                              QStackedWidget, QDateEdit, QTreeWidget, QTreeWidgetItem, 
                              QAbstractItemView, QSplitter, QMenu, QAbstractSpinBox,
-                             QCalendarWidget, QWidgetAction, QMessageBox)
+                             QCalendarWidget, QWidgetAction, QMessageBox,
+                             QTreeWidgetItemIterator)
 from PyQt6.QtCore import Qt, QDate, pyqtSignal, QTimer, QSize, QEvent, QSettings
 from PyQt6.QtGui import QColor, QMouseEvent, QAction, QIcon, QPixmap
+
+print("Starting Kanban Board v50 (Attribute Fix)...")
 
 # --- 0. Global Synchronizer ---
 class SplitterSynchronizer:
@@ -23,41 +27,56 @@ class SplitterSynchronizer:
         self.splitters.append(splitter)
         splitter.splitterMoved.connect(lambda pos, idx: self.sync(splitter, pos, idx))
         if len(self.splitters) > 1:
-            splitter.setSizes(self.splitters[0].sizes())
-
-    def sync(self, sender, pos, index):
-        if self.is_syncing: return
-        self.is_syncing = True
-        sizes = sender.sizes()
-        for s in self.splitters:
-            if s != sender: s.setSizes(sizes)
-        self.is_syncing = False
-    
-    def force_update_all(self, sizes):
-        self.is_syncing = True
-        for s in self.splitters:
-            s.setSizes(sizes)
-        self.is_syncing = False
+            try: splitter.setSizes(self.splitters[0].sizes())
+            except: pass
 
     def remove_splitter(self, splitter):
         if splitter in self.splitters:
             self.splitters.remove(splitter)
 
+    def sync(self, sender, pos, index):
+        if self.is_syncing: return
+        self.is_syncing = True
+        self.splitters = [s for s in self.splitters if not self._is_deleted(s)]
+        try:
+            sizes = sender.sizes()
+            for s in self.splitters:
+                if s != sender:
+                    try: s.setSizes(sizes)
+                    except: pass
+        except: pass
+        self.is_syncing = False
+    
+    def force_update(self):
+        if not self.splitters: return
+        self.is_syncing = True
+        self.splitters = [s for s in self.splitters if not self._is_deleted(s)]
+        try:
+            base_sizes = self.splitters[0].sizes()
+            for s in self.splitters[1:]:
+                try: s.setSizes(base_sizes)
+                except: pass
+        except: pass
+        self.is_syncing = False
+
+    def _is_deleted(self, obj):
+        try: 
+            obj.sizes()
+            return False
+        except: return True
+
 GLOBAL_SYNC = SplitterSynchronizer()
 
-# --- 1. Helper Logic ---
-def parse_date(date_str):
-    try:
-        y, m, d = map(int, date_str.split('-'))
-        return date(y, m, d)
-    except:
-        return None
-
+# --- 1. Helpers ---
 def calculate_end_date(start_str, duration_str):
-    start_date = parse_date(start_str)
-    if not start_date: start_date = date.today()
+    try:
+        y, m, d = map(int, str(start_str).split('-'))
+        start_date = date(y, m, d)
+    except:
+        start_date = date.today()
+
     days = 0
-    match = re.match(r"(\d+)\s*([dwm]?)", duration_str.lower())
+    match = re.match(r"(\d+)\s*([dwm]?)", str(duration_str).lower())
     if match:
         amount = int(match.group(1))
         unit = match.group(2)
@@ -75,26 +94,29 @@ def calculate_end_date(start_str, duration_str):
 
 def get_icon_for_date(end_date_str):
     if end_date_str == "?": return ""
-    end_date = parse_date(end_date_str)
-    if not end_date: return ""
-    today = date.today()
-    if today > end_date: return "🔴"
-    elif today == end_date: return "❗"
-    elif today < end_date <= (today + timedelta(days=7)): return "⚡"
+    try:
+        y, m, d = map(int, str(end_date_str).split('-'))
+        end_date = date(y, m, d)
+        today = date.today()
+        if today > end_date: return "🔴"
+        if today == end_date: return "❗"
+        if today < end_date <= (today + timedelta(days=7)): return "⚡"
+    except: pass
     return ""
 
 def get_prio_color(p_text):
-    p = str(p_text)[0] 
-    if p == "1": return "#D32F2F"
-    if p == "2": return "#1976D2"
+    p = str(p_text)[0]
+    if p == "1": return "#D32F2F" # Red
+    if p == "2": return "#9C27B0" # Purple
+    if p == "3": return "#1976D2" # Blue
+    if p == "4": return "#388E3C" # Green
     return "#757575"
 
-# --- 2. Custom Modern Widgets ---
+# --- 2. Widgets ---
 
 class PriorityButton(QPushButton):
     priorityChanged = pyqtSignal(str)
-
-    def __init__(self, current_prio="3 - Low"):
+    def __init__(self, current_prio="3"):
         super().__init__()
         self.setFixedSize(24, 24)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -104,784 +126,753 @@ class PriorityButton(QPushButton):
 
     def update_style(self, prio_text):
         self.current_prio = prio_text
-        display_text = str(prio_text)[0] 
+        display = str(prio_text)[0]
         color = get_prio_color(prio_text)
-        self.setText(display_text)
-        self.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {color}; color: white; border-radius: 4px;
-                font-weight: bold; font-size: 11px; border: none;
-            }}
-            QPushButton:hover {{ border: 1px solid white; }}
-        """)
-        self.setToolTip(prio_text)
+        self.setText(display)
+        self.setStyleSheet(f"background-color: {color}; color: white; border-radius: 4px; font-weight: bold; border: none;")
 
     def show_menu(self):
         menu = QMenu(self)
-        menu.setStyleSheet("QMenu { background-color: white; border: 1px solid #ccc; } QMenu::item { padding: 5px 20px; } QMenu::item:selected { background-color: #eee; }")
-        actions = [("1 - High", "#D32F2F"), ("2 - Medium", "#1976D2"), ("3 - Low", "#757575")]
+        actions = [("1", "#D32F2F"), ("2", "#9C27B0"), ("3", "#1976D2"), ("4", "#388E3C")]
         for label, color in actions:
             pix = QPixmap(16, 16)
             pix.fill(QColor(color))
             action = QAction(QIcon(pix), label, self)
-            action.triggered.connect(lambda checked, val=label: self.handle_selection(val))
+            action.triggered.connect(lambda ch, val=label: self.handle_sel(val))
             menu.addAction(action)
         menu.exec(self.mapToGlobal(self.rect().bottomLeft()))
 
-    def handle_selection(self, prio):
-        self.update_style(prio)
-        self.priorityChanged.emit(prio)
+    def handle_sel(self, val):
+        self.update_style(val)
+        self.priorityChanged.emit(val)
 
 class DateInputWidget(QWidget):
-    dateChanged = pyqtSignal()
     editingFinished = pyqtSignal()
-
     def __init__(self):
         super().__init__()
-        layout = QHBoxLayout()
-        layout.setContentsMargins(0,0,0,0)
-        layout.setSpacing(2)
-        self.setLayout(layout)
+        l = QHBoxLayout()
+        l.setContentsMargins(0,0,0,0)
+        l.setSpacing(2)
+        self.setLayout(l)
+        self.line = QLineEdit()
+        self.line.setPlaceholderText("YYYY-MM-DD")
+        self.line.setFixedWidth(85)
+        self.line.editingFinished.connect(self.editingFinished.emit)
+        self.btn = QPushButton("📅")
+        self.btn.setFixedSize(24, 24)
+        self.btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn.setStyleSheet("border: none; background: transparent;")
+        self.btn.clicked.connect(self.popup)
+        l.addWidget(self.line)
+        l.addWidget(self.btn)
 
-        self.line_edit = QLineEdit()
-        self.line_edit.setPlaceholderText("YYYY-MM-DD")
-        self.line_edit.setFixedWidth(85)
-        self.line_edit.editingFinished.connect(self.editingFinished.emit)
+    def setDate(self, d_str):
+        self.line.setText(str(d_str))
 
-        self.btn_icon = QPushButton("📅")
-        self.btn_icon.setFixedSize(24, 24)
-        self.btn_icon.setCursor(Qt.CursorShape.PointingHandCursor)
-        # Transparent background for the icon button by default
-        self.btn_icon.setStyleSheet("QPushButton { border: none; background: transparent; font-size: 16px; }")
-        self.btn_icon.clicked.connect(self.show_calendar)
-
-        layout.addWidget(self.line_edit)
-        layout.addWidget(self.btn_icon)
-
-    def setDate(self, date_obj):
-        if isinstance(date_obj, date):
-            self.line_edit.setText(date_obj.strftime("%Y-%m-%d"))
-        elif isinstance(date_obj, QDate):
-            self.line_edit.setText(date_obj.toString("yyyy-MM-dd"))
-        else:
-            self.line_edit.setText(str(date_obj))
-
-    def date(self):
-        d = QDate.fromString(self.line_edit.text(), "yyyy-MM-dd")
-        if not d.isValid(): return QDate.currentDate()
-        return d
-
-    def show_calendar(self):
+    def popup(self):
         menu = QMenu(self)
         cal = QCalendarWidget()
         cal.setGridVisible(True)
-        cal.setSelectedDate(self.date())
-        cal.activated.connect(lambda: self.select_date(cal, menu))
-        cal.clicked.connect(lambda: self.select_date(cal, menu))
+        try:
+            d = QDate.fromString(self.line.text(), "yyyy-MM-dd")
+            if d.isValid(): cal.setSelectedDate(d)
+            else: cal.setSelectedDate(QDate.currentDate())
+        except: pass
+        
+        cal.activated.connect(lambda: self.sel(cal, menu))
+        cal.clicked.connect(lambda: self.sel(cal, menu))
+        ac = QWidgetAction(menu)
+        ac.setDefaultWidget(cal)
+        menu.addAction(ac)
+        menu.exec(self.btn.mapToGlobal(self.btn.rect().bottomLeft()))
 
-        action = QWidgetAction(menu)
-        action.setDefaultWidget(cal)
-        menu.addAction(action)
-        menu.exec(self.btn_icon.mapToGlobal(self.btn_icon.rect().bottomLeft()))
-
-    def select_date(self, cal, menu):
-        selected = cal.selectedDate()
-        self.line_edit.setText(selected.toString("yyyy-MM-dd"))
+    def sel(self, cal, menu):
+        self.line.setText(cal.selectedDate().toString("yyyy-MM-dd"))
         menu.close()
-        self.dateChanged.emit()
         self.editingFinished.emit()
-
-# --- 3. Task Card ---
 
 class TaskCardWidget(QWidget):
     dataChanged = pyqtSignal(dict)
     sizeChanged = pyqtSignal()
     requestSave = pyqtSignal()
+    requestDelete = pyqtSignal()
 
-    def __init__(self, data, is_new=False):
+    def __init__(self, data, is_completed_row=False):
         super().__init__()
         self.data = data
+        self.is_completed_row = is_completed_row
         if 'id' not in self.data: self.data['id'] = str(uuid.uuid4())
 
         layout = QVBoxLayout()
         layout.setContentsMargins(0,0,0,0)
         self.setLayout(layout)
-
+        
         self.container = QFrame()
         self.container.setObjectName("CardContainer")
         layout.addWidget(self.container)
 
         self.stack = QStackedWidget()
-        c_layout = QVBoxLayout()
-        c_layout.setContentsMargins(6,6,6,6)
-        self.container.setLayout(c_layout)
-        c_layout.addWidget(self.stack)
+        self.container.setLayout(QVBoxLayout())
+        self.container.layout().setContentsMargins(6,6,6,6)
+        self.container.layout().addWidget(self.stack)
 
-        # --- View Widget ---
+        # View Mode
         self.view_widget = QWidget()
-        v_box = QHBoxLayout()
-        v_box.setContentsMargins(0,0,0,0)
-        v_box.setSpacing(8)
-        self.view_widget.setLayout(v_box)
-
+        hbox = QHBoxLayout(self.view_widget)
+        hbox.setContentsMargins(0,0,0,0)
         self.lbl_prio = QLabel()
-        self.lbl_prio.setFixedSize(20, 20)
+        self.lbl_prio.setFixedSize(20,20)
         self.lbl_prio.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_prio.setStyleSheet("color: white; border-radius: 4px; font-weight: bold; font-size: 11px;")
-        
         self.lbl_name = QLabel()
-        self.lbl_name.setStyleSheet("font-weight: bold; font-size: 13px; border: none;")
-        
+        self.lbl_name.setStyleSheet("font-weight: bold;")
         self.lbl_info = QLabel()
-        self.lbl_info.setStyleSheet("font-size: 11px; border: none;")
-
-        v_box.addWidget(self.lbl_prio)
-        v_box.addWidget(self.lbl_name, 1)
-        v_box.addWidget(self.lbl_info)
-
-        # --- Edit Widget ---
-        self.edit_widget = QWidget()
-        e_box = QHBoxLayout()
-        e_box.setContentsMargins(0,0,0,0)
-        e_box.setSpacing(5)
-        self.edit_widget.setLayout(e_box)
-
-        self.btn_prio_edit = PriorityButton(self.data.get('priority', '3 - Low'))
-        self.btn_prio_edit.priorityChanged.connect(lambda: self.save_edit(force_close=False))
-
-        self.edit_name = QLineEdit()
-        self.edit_name.setPlaceholderText("Subject")
-        self.edit_name.returnPressed.connect(lambda: self.save_edit(force_close=True))
-        self.edit_name.editingFinished.connect(lambda: self.save_edit(force_close=False))
+        self.btn_del = QPushButton("×")
+        self.btn_del.setFixedSize(16,16)
+        self.btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_del.clicked.connect(self.requestDelete.emit)
+        self.btn_del.setStyleSheet("border:none; color:#999; font-weight:bold;")
         
-        self.edit_pic = QLineEdit()
-        self.edit_pic.setPlaceholderText("PIC")
-        self.edit_pic.setFixedWidth(50)
-        self.edit_pic.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.edit_pic.editingFinished.connect(lambda: self.save_edit(force_close=False))
+        hbox.addWidget(self.lbl_prio)
+        hbox.addWidget(self.lbl_name, 1)
+        hbox.addWidget(self.lbl_info)
+        hbox.addWidget(self.btn_del)
 
-        self.edit_start = DateInputWidget()
-        self.edit_start.setFixedWidth(120) 
-        self.edit_start.editingFinished.connect(lambda: self.save_edit(force_close=False))
+        # Edit Mode (FIX: USE self.edit_widget so save() can find it)
+        self.edit_widget = QWidget()
+        ebox = QHBoxLayout(self.edit_widget)
+        ebox.setContentsMargins(0,0,0,0)
+        
+        self.in_prio = PriorityButton(data.get('priority', '3'))
+        self.in_prio.priorityChanged.connect(lambda: self.save())
+        
+        self.in_name = QLineEdit()
+        self.in_name.setPlaceholderText("Subject")
+        self.in_name.editingFinished.connect(lambda: self.save())
+        self.in_name.returnPressed.connect(lambda: self.save(True))
 
-        self.edit_duration = QLineEdit()
-        self.edit_duration.setPlaceholderText("2d")
-        self.edit_duration.setFixedWidth(40) 
-        self.edit_duration.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.edit_duration.returnPressed.connect(lambda: self.save_edit(force_close=True))
-        self.edit_duration.editingFinished.connect(lambda: self.save_edit(force_close=False))
+        self.in_pic = QLineEdit()
+        self.in_pic.setPlaceholderText("PIC")
+        self.in_pic.setFixedWidth(50)
+        self.in_pic.editingFinished.connect(lambda: self.save())
+        self.in_pic.returnPressed.connect(lambda: self.save(True))
 
-        e_box.addWidget(self.btn_prio_edit)
-        e_box.addWidget(self.edit_name)
-        e_box.addWidget(self.edit_pic)
-        e_box.addWidget(self.edit_start)
-        e_box.addWidget(self.edit_duration)
+        self.in_date = DateInputWidget()
+        self.in_date.setFixedWidth(120)
+        self.in_date.editingFinished.connect(lambda: self.save())
+
+        self.in_dur = QLineEdit()
+        self.in_dur.setPlaceholderText("2d")
+        self.in_dur.setFixedWidth(40)
+        self.in_dur.editingFinished.connect(lambda: self.save())
+        self.in_dur.returnPressed.connect(lambda: self.save(True))
+
+        ebox.addWidget(self.in_prio)
+        ebox.addWidget(self.in_name)
+        ebox.addWidget(self.in_pic)
+        ebox.addWidget(self.in_date)
+        ebox.addWidget(self.in_dur)
 
         self.stack.addWidget(self.view_widget)
         self.stack.addWidget(self.edit_widget)
 
-        if is_new:
-            self.start_edit()
-        else:
-            self.update_view_from_data()
-            self.stack.setCurrentWidget(self.view_widget)
+        self.refresh_ui()
 
-    def set_status_style(self, status):
-        # Apply strict styling
-        if status in ["Done", "Cancelled"]:
-            # GRAY MODE
-            bg_color = "#E0E0E0"
-            border_color = "#BDBDBD"
-            text_color = "#666"
-            
-            # We force transparency on children so the gray background shows through everywhere
-            self.setStyleSheet(f"""
-                QWidget#CardContainer {{
-                    background-color: {bg_color}; 
-                    border: 1px solid {border_color};
-                    border-radius: 6px;
-                }}
-                /* Force nested widgets to be transparent */
-                QWidget {{ background: transparent; }}
-                QLineEdit {{ 
-                    background: transparent; 
-                    color: {text_color}; 
-                    border: none; 
-                    border-bottom: 1px solid #999;
-                }}
-                QLabel {{ color: {text_color}; background: transparent; }}
-            """)
-        else:
-            # NORMAL WHITE MODE
-            self.setStyleSheet("""
-                QWidget#CardContainer {
-                    background-color: white; 
-                    border: 1px solid #E0E0E0;
-                    border-radius: 6px;
-                }
-                /* Reset transparency for normal operation */
-                QLineEdit { 
-                    border: 1px solid transparent; 
-                    border-bottom: 1px solid #eee;
-                    background: transparent;
-                    color: #333;
-                }
-                QLineEdit:focus { border-bottom: 1px solid #2196F3; }
-                QLabel { color: #333; }
-            """)
+    def refresh_ui(self):
+        # Data
+        p = self.data.get('priority', '3')
+        self.lbl_prio.setText(str(p)[0])
+        self.lbl_prio.setStyleSheet(f"background-color: {get_prio_color(p)}; color: white; border-radius: 4px;")
+        self.lbl_name.setText(self.data.get('name', ''))
+        
+        info = []
+        if self.data.get('pic'): info.append(f"[{self.data['pic']}]")
+        info.append(f"S: {self.data.get('start','')}")
+        if self.data.get('duration'): info.append(f"({self.data['duration']})")
+        info.append(f"E: {self.data.get('end','')} {self.get_date_icon()}")
+        self.lbl_info.setText(" | ".join(info))
 
-    def update_view_from_data(self):
-        p_text = self.data.get('priority', '3 - Low')
-        p_char = str(p_text)[0]
-        self.lbl_prio.setText(p_char)
-        self.lbl_prio.setStyleSheet(f"background-color: {get_prio_color(p_text)}; color: white; border-radius: 4px; font-weight: bold;")
+        # Inputs
+        self.in_name.setText(self.data.get('name', ''))
+        self.in_pic.setText(self.data.get('pic', ''))
+        self.in_dur.setText(self.data.get('duration', ''))
+        self.in_date.setDate(self.data.get('start', ''))
+        self.in_prio.update_style(p)
+
+        # Style
+        stage = str(self.data.get('stage', '1'))
+        is_gray = (stage == '3') or self.is_completed_row
         
-        self.lbl_name.setText(self.data.get('name', 'New Task'))
+        bg = "#E0E0E0" if is_gray else "white"
+        txt = "#555" if is_gray else "#000"
         
-        pic = self.data.get('pic', '')
-        start = self.data.get('start', date.today().strftime("%Y-%m-%d"))
-        dur = self.data.get('duration', '')
-        end = self.data.get('end', '?')
-        icon = get_icon_for_date(end)
-        
-        parts = []
-        if pic: parts.append(f"[{pic}]")
-        parts.append(f"S: {start}")
-        if dur: parts.append(f"({dur})")
-        parts.append(f"E: {end} {icon}")
-        
-        self.lbl_info.setText(" | ".join(parts))
+        self.setStyleSheet(f"""
+            QWidget#CardContainer {{ background: {bg}; border: 1px solid #ccc; border-radius: 6px; }}
+            QLineEdit {{ background: transparent; border: none; border-bottom: 1px solid #aaa; color: {txt}; }}
+            QLabel {{ color: {txt}; background: transparent; }}
+        """)
+
+    def get_date_icon(self):
+        try:
+            ed = self.data.get('end', '')
+            if not ed or ed == "?": return ""
+            y,m,d = map(int, ed.split('-'))
+            dd = date(y,m,d)
+            if date.today() > dd: return "🔴"
+            if date.today() == dd: return "❗"
+            if date.today() < dd <= date.today() + timedelta(days=7): return "⚡"
+        except: pass
+        return ""
 
     def start_edit(self):
-        self.edit_name.setText(self.data.get('name', ''))
-        self.edit_pic.setText(self.data.get('pic', ''))
-        self.edit_duration.setText(self.data.get('duration', ''))
-        s_date = parse_date(self.data.get('start', ''))
-        if not s_date: s_date = date.today()
-        self.edit_start.setDate(s_date)
-        p = self.data.get('priority', '3 - Low')
-        self.btn_prio_edit.update_style(p)
-        self.stack.setCurrentWidget(self.edit_widget)
-        self.edit_name.setFocus()
-        self.sizeChanged.emit() 
+        self.refresh_ui()
+        self.stack.setCurrentIndex(1)
+        self.in_name.setFocus()
+        self.sizeChanged.emit()
 
-    def save_edit(self, force_close=False):
-        name = self.edit_name.text().strip()
-        if not name: name = "Unnamed Task"
-        pic = self.edit_pic.text().strip()
-        dur = self.edit_duration.text().strip()
-        prio = self.btn_prio_edit.current_prio
-        start = self.edit_start.line_edit.text() 
-        end = calculate_end_date(start, dur)
-
-        self.data.update({
-            'name': name, 'pic': pic, 'duration': dur, 'priority': prio, 'start': start, 'end': end
-        })
-
-        should_close = force_close
-        if not force_close:
-            focus_widget = QApplication.focusWidget()
-            if focus_widget and self.edit_widget.isAncestorOf(focus_widget):
-                should_close = False
-            else:
-                should_close = True
-
-        self.update_view_from_data()
+    def save(self, close=False):
+        self.data['name'] = self.in_name.text()
+        self.data['pic'] = self.in_pic.text()
+        self.data['duration'] = self.in_dur.text()
+        self.data['priority'] = self.in_prio.current_prio
+        self.data['start'] = self.in_date.line.text()
+        self.data['end'] = calculate_end_date(self.data['start'], self.data['duration'])
+        
+        self.refresh_ui()
         self.dataChanged.emit(self.data)
         self.requestSave.emit()
         
-        if should_close:
-            self.stack.setCurrentWidget(self.view_widget)
+        if close or not self.edit_widget.isAncestorOf(QApplication.focusWidget()):
+            self.stack.setCurrentIndex(0)
             self.sizeChanged.emit()
 
-# --- 4. Kanban Column ---
+# --- 2. Tree Column ---
 
-class KanbanColumn(QTreeWidget):
-    heightReqChanged = pyqtSignal(int)
-    itemCountChanged = pyqtSignal()
+class KanbanTree(QTreeWidget):
     contentChanged = pyqtSignal()
-    
-    def __init__(self, bg_color, status_type="Todo"):
+    heightChanged = pyqtSignal(int)
+    itemCountChanged = pyqtSignal()
+
+    def __init__(self, bg_color, stage_code, is_completed_project=False):
         super().__init__()
-        self.status_type = status_type
+        self.stage_code = stage_code 
+        self.is_completed_project = is_completed_project
+        self.visual_height = 60
+        
+        self.setHeaderHidden(True)
+        self.setIndentation(20)
         self.setAcceptDrops(True)
         self.setDragEnabled(True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.setHeaderHidden(True)
-        self.setIndentation(20)
-        self.itemDoubleClicked.connect(self.handle_double_click)
         
-        self.itemExpanded.connect(lambda: self.report_height())
-        self.itemCollapsed.connect(lambda: self.report_height())
-
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setStyleSheet(f"""
-            QTreeWidget {{
-                background-color: {bg_color}; border-radius: 4px; border: none;
-            }}
-            QTreeWidget::item {{ background-color: transparent; margin: 2px; }}
-        """)
-        QTimer.singleShot(10, self.report_height)
-
-    def mousePressEvent(self, event: QMouseEvent):
-        item = self.itemAt(event.pos())
-        if not item:
-            self.create_inline_task()
-            return
-        super().mousePressEvent(event)
-
-    def create_inline_task(self):
-        new_data = {
-            "id": str(uuid.uuid4()), "name": "", "pic": "", "priority": "1 - High", 
-            "start": date.today().strftime("%Y-%m-%d"), "duration": "", "end": "?"
-        }
-        self.add_task_item(new_data, is_new=True)
-
-    def handle_double_click(self, item, column):
-        widget = self.itemWidget(item, 0)
-        if widget: widget.start_edit()
-
-    def update_parent_dates(self, parent_item):
-        if not parent_item: return
-        p_data = parent_item.data(0, Qt.ItemDataRole.UserRole)
-        if p_data is None: return
-
-        child_count = parent_item.childCount()
-        if child_count == 0: return
-
-        min_start, max_end = None, None
-        for i in range(child_count):
-            child = parent_item.child(i)
-            c_data = child.data(0, Qt.ItemDataRole.UserRole)
-            if not c_data: continue
-            c_start = parse_date(c_data.get('start', ''))
-            c_end = parse_date(c_data.get('end', ''))
-            if c_start:
-                if min_start is None or c_start < min_start: min_start = c_start
-            if c_end:
-                if max_end is None or c_end > max_end: max_end = c_end
-
-        updated = False
-        if min_start and p_data.get('start') != min_start.strftime("%Y-%m-%d"):
-            p_data['start'] = min_start.strftime("%Y-%m-%d")
-            updated = True
-        if max_end and p_data.get('end') != max_end.strftime("%Y-%m-%d"):
-            p_data['end'] = max_end.strftime("%Y-%m-%d")
-            updated = True
+        self.setStyleSheet(f"QTreeWidget {{ background: {bg_color}; border: none; border-radius: 4px; }} QTreeWidget::item {{ background: transparent; margin: 1px; }}")
         
-        if updated:
-            parent_item.setData(0, Qt.ItemDataRole.UserRole, p_data) 
-            widget = self.itemWidget(parent_item, 0)
-            if widget: 
-                widget.data = p_data
-                widget.update_view_from_data()
-            self.contentChanged.emit() 
-        
-        if parent_item.parent():
-            self.update_parent_dates(parent_item.parent())
+        self.itemDoubleClicked.connect(lambda item: self.itemWidget(item, 0).start_edit() if self.itemWidget(item,0) else None)
+        self.itemExpanded.connect(self.update_height)
+        self.itemCollapsed.connect(self.update_height)
+        QTimer.singleShot(10, self.update_height)
 
-    def on_task_data_changed(self, item, new_data):
-        item.setData(0, Qt.ItemDataRole.UserRole, new_data)
+    def mousePressEvent(self, event):
+        if not self.itemAt(event.position().toPoint()):
+            data = {
+                'id': str(uuid.uuid4()), 'name': '', 'pic': '', 'priority': '3',
+                'start': date.today().strftime("%Y-%m-%d"), 'duration': '', 'end': '?',
+                'stage': str(self.stage_code)
+            }
+            self.add_item(data, is_new=True)
+        else:
+            super().mousePressEvent(event)
+
+    def add_item(self, data, parent=None, is_new=False):
+        item = QTreeWidgetItem()
+        item.setData(0, Qt.ItemDataRole.UserRole, data)
+        if parent: parent.addChild(item)
+        else: self.addTopLevelItem(item)
+        
+        self.create_widget(item, data, is_new)
+        self.update_height()
+        self.itemCountChanged.emit()
+        self.contentChanged.emit()
+        return item
+
+    def create_widget(self, item, data, is_new):
+        item.setSizeHint(0, QSize(200, 44))
+        w = TaskCardWidget(data, self.is_completed_project)
+        w.dataChanged.connect(lambda d: self.update_data(item, d))
+        w.requestSave.connect(self.contentChanged.emit)
+        w.requestDelete.connect(lambda: self.delete_item(item))
+        w.sizeChanged.connect(self.update_height)
+        self.setItemWidget(item, 0, w)
+        if is_new: w.start_edit()
+
+    def update_data(self, item, data):
+        item.setData(0, Qt.ItemDataRole.UserRole, data)
         if item.parent(): self.update_parent_dates(item.parent())
         self.contentChanged.emit()
 
-    def add_task_item(self, data, is_new=False):
-        item = QTreeWidgetItem(self)
-        item.setData(0, Qt.ItemDataRole.UserRole, data)
-        item.setSizeHint(0, QSize(200, 44))
-        self.create_card(item, data, is_new)
-        self.report_height()
+    def delete_item(self, item):
+        p = item.parent()
+        if p: 
+            p.removeChild(item)
+            self.update_parent_dates(p)
+        else: 
+            self.takeTopLevelItem(self.indexOfTopLevelItem(item))
+        self.update_height()
         self.itemCountChanged.emit()
         self.contentChanged.emit()
 
-    def create_card(self, item, data, is_new):
-        widget = TaskCardWidget(data, is_new)
-        widget.set_status_style(self.status_type) 
-        widget.dataChanged.connect(lambda d: self.on_task_data_changed(item, d))
-        widget.requestSave.connect(lambda: self.contentChanged.emit())
-        widget.sizeChanged.connect(self.report_height)
-        self.setItemWidget(item, 0, widget)
+    def update_parent_dates(self, parent):
+        if not parent: return
+        p_data = parent.data(0, Qt.ItemDataRole.UserRole)
+        count = parent.childCount()
+        if count == 0: return
+
+        starts = []
+        ends = []
+        for i in range(count):
+            child = parent.child(i)
+            cd = child.data(0, Qt.ItemDataRole.UserRole)
+            try: starts.append(date.fromisoformat(cd.get('start')))
+            except: pass
+            try: ends.append(date.fromisoformat(cd.get('end')))
+            except: pass
+        
+        changed = False
+        if starts:
+            mn = min(starts).strftime("%Y-%m-%d")
+            if p_data.get('start') != mn: 
+                p_data['start'] = mn
+                changed = True
+        if ends:
+            mx = max(ends).strftime("%Y-%m-%d")
+            if p_data.get('end') != mx:
+                p_data['end'] = mx
+                changed = True
+        
+        if changed:
+            parent.setData(0, Qt.ItemDataRole.UserRole, p_data)
+            w = self.itemWidget(parent, 0)
+            if w: 
+                w.data = p_data
+                w.refresh_ui()
+            self.contentChanged.emit()
+        
+        if parent.parent(): self.update_parent_dates(parent.parent())
+
+    def update_height(self):
+        h = 10
+        def traverse(p):
+            nonlocal h
+            c = p.childCount() if p else self.topLevelItemCount()
+            for i in range(c):
+                it = p.child(i) if p else self.topLevelItem(i)
+                h += 46 # approx card height
+                if it.isExpanded(): traverse(it)
+        traverse(None)
+        if h < 60: h = 60
+        self.visual_height = h
+        self.heightChanged.emit(h)
 
     def dropEvent(self, event):
+        event.setDropAction(Qt.DropAction.MoveAction)
         super().dropEvent(event)
-        self.restore_widgets_recursive(self.invisibleRootItem())
-        self.expandAll()
-        for item in self.selectedItems():
-            if item.parent(): self.update_parent_dates(item.parent())
-        self.report_height()
+        QTimer.singleShot(10, self.post_drop_logic)
+
+    def post_drop_logic(self):
+        self.rebuild_widgets_recursive(self.invisibleRootItem())
+        self.update_height()
         self.itemCountChanged.emit()
         self.contentChanged.emit()
 
-    def restore_widgets_recursive(self, parent_item):
-        count = parent_item.childCount()
-        for i in range(count):
-            item = parent_item.child(i)
-            if self.itemWidget(item, 0) is None:
-                data = item.data(0, Qt.ItemDataRole.UserRole)
-                if data: self.create_card(item, data, is_new=False) 
-            if item.childCount() > 0:
-                self.restore_widgets_recursive(item)
-
-    def report_height(self):
-        total_items = self.count_items_recursive(self.invisibleRootItem())
-        needed = 10 + (total_items * 46)
-        if needed < 60: needed = 60
-        self.heightReqChanged.emit(needed)
-
-    def count_items_recursive(self, parent):
-        c = 0
+    def rebuild_widgets_recursive(self, parent):
         count = parent.childCount()
         for i in range(count):
             item = parent.child(i)
-            c += 1 
-            if item.isExpanded(): c += self.count_items_recursive(item)
-        return c
-        
-    def recalculate_all_dates_recursive(self, parent_item):
-        count = parent_item.childCount()
-        for i in range(count):
-            child = parent_item.child(i)
-            self.recalculate_all_dates_recursive(child)
-        if parent_item is not self.invisibleRootItem():
-            self.update_parent_dates(parent_item)
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            
+            # Update Stage
+            if data and str(data.get('stage')) != str(self.stage_code):
+                data['stage'] = str(self.stage_code)
+                item.setData(0, Qt.ItemDataRole.UserRole, data)
+            
+            if self.itemWidget(item, 0) is None and data:
+                self.create_widget(item, data, is_new=False)
+                item.setExpanded(True)
 
-# --- 5. Project Row ---
+            w = self.itemWidget(item, 0)
+            if w:
+                w.is_completed_row = self.is_completed_project
+                w.refresh_ui()
+
+            self.rebuild_widgets_recursive(item)
+            if item.parent(): self.update_parent_dates(item.parent())
+
+# --- 3. Project Row ---
 
 class ProjectRow(QFrame):
     requestSave = pyqtSignal()
     requestDelete = pyqtSignal(QFrame)
 
-    def __init__(self, project_name, board_layout):
+    def __init__(self, name, is_completed=False):
         super().__init__()
-        self.board_layout = board_layout
+        self.is_completed = is_completed
         self.setObjectName("RowFrame")
-        self.heights = [60, 60, 60, 60]
-
-        self.layout = QHBoxLayout()
-        self.layout.setContentsMargins(5, 5, 5, 5)
-        self.layout.setSpacing(5)
-        self.setLayout(self.layout)
         
-        self.project_frame = QFrame()
-        self.project_frame.setFixedWidth(200)
-        self.project_frame.setObjectName("ProjectBox")
-        self.project_frame.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(5,5,5,5)
         
-        p_main = QVBoxLayout()
-        p_main.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.project_frame.setLayout(p_main)
+        # Header Box
+        self.header_box = QFrame()
+        self.header_box.setObjectName("ProjectBox")
+        self.header_box.setFixedWidth(200)
+        hlayout = QHBoxLayout(self.header_box)
+        hlayout.setContentsMargins(5,5,5,5)
         
-        h_layout = QHBoxLayout()
-        h_layout.setContentsMargins(0,0,0,0)
-        
-        self.btn_delete = QPushButton("×")
-        self.btn_delete.setFixedSize(20, 20)
-        self.btn_delete.setStyleSheet("QPushButton { background: transparent; color: #555; font-weight: bold; font-size: 16px; border: none; } QPushButton:hover { color: red; }")
-        self.btn_delete.setToolTip("Delete Project")
-        self.btn_delete.clicked.connect(self.confirm_delete)
-
+        # Controls
+        ctrl = QVBoxLayout()
         self.btn_color = QPushButton()
-        self.btn_color.setFixedSize(24, 24)
-        self.btn_color.clicked.connect(self.pick_color)
+        self.btn_color.setFixedSize(16,16)
+        self.btn_color.setStyleSheet("border-radius:8px; border:none;")
+        if not is_completed: self.btn_color.clicked.connect(self.pick_color)
         
-        self.input_name = QLineEdit(project_name)
-        self.input_name.setStyleSheet("background: transparent; border: none; font-weight: bold; font-size: 14px;")
-        self.input_name.editingFinished.connect(lambda: self.requestSave.emit())
-        
-        h_layout.addWidget(self.btn_color)
-        h_layout.addWidget(self.input_name)
-        p_main.addLayout(h_layout)
+        self.btn_font = QPushButton()
+        self.btn_font.setFixedSize(16,16)
+        if not is_completed: 
+            self.btn_font.clicked.connect(self.toggle_font)
+            self.btn_font.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self.lbl_stats = QLabel("(Todo: 0 | WIP: 0 | Done: 0)")
-        self.lbl_stats.setStyleSheet("background: transparent; color: #333; font-size: 10px; margin-left: 28px;") 
+        ctrl.addWidget(self.btn_color)
+        ctrl.addWidget(self.btn_font)
+        ctrl.addStretch()
         
-        bottom_layout = QHBoxLayout()
-        bottom_layout.setContentsMargins(0,0,0,0)
-        bottom_layout.addWidget(self.lbl_stats)
-        bottom_layout.addStretch()
-        bottom_layout.addWidget(self.btn_delete)
+        # Info
+        info = QVBoxLayout()
+        self.inp_name = QLineEdit(name)
+        self.inp_name.setStyleSheet("background:transparent; border:none; font-weight:bold; font-size:14px;")
+        self.inp_name.editingFinished.connect(self.requestSave.emit)
+        if is_completed: self.inp_name.setReadOnly(True)
 
-        p_main.addLayout(bottom_layout)
-        p_main.addStretch()
+        btm = QHBoxLayout()
+        self.lbl_stat = QLabel("(T:0|W:0|D:0)")
+        self.lbl_stat.setStyleSheet("font-size:10px;")
+        btm.addWidget(self.lbl_stat)
+        btm.addStretch()
         
-        # Columns with Status Types
-        self.col_todo = KanbanColumn("#E3F2FD", "Todo")
-        self.col_wip = KanbanColumn("#FFF8E1", "WIP")
-        self.col_done = KanbanColumn("#E8F5E9", "Done")
-        self.col_cancelled = KanbanColumn("#F5F5F5", "Cancelled")
+        if not is_completed:
+            btn_x = QPushButton("×")
+            btn_x.setFixedSize(20,20)
+            btn_x.setStyleSheet("border:none; font-weight:bold; color:#555;")
+            btn_x.clicked.connect(self.delete_self)
+            btm.addWidget(btn_x)
 
+        info.addWidget(self.inp_name)
+        info.addStretch()
+        info.addLayout(btm)
+
+        hlayout.addLayout(ctrl)
+        hlayout.addLayout(info)
+        layout.addWidget(self.header_box)
+
+        # Trees
+        self.cols = []
+        configs = [("#E3F2FD", 1), ("#FFF8E1", 2), ("#E8F5E9", 3)]
+        
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.splitter.addWidget(self.col_todo)
-        self.splitter.addWidget(self.col_wip)
-        self.splitter.addWidget(self.col_done)
-        self.splitter.addWidget(self.col_cancelled)
         GLOBAL_SYNC.add_splitter(self.splitter)
 
-        cols = [self.col_todo, self.col_wip, self.col_done, self.col_cancelled]
-        for i, col in enumerate(cols):
-            col.heightReqChanged.connect(lambda h, idx=i: self.update_row_height(idx, h))
-            col.itemCountChanged.connect(self.update_stats)
-            col.contentChanged.connect(lambda: self.requestSave.emit())
-
-        self.layout.addWidget(self.project_frame)
-        self.layout.addWidget(self.splitter)
-        self.apply_color_theme("#FFAB91")
-
-    def confirm_delete(self):
-        reply = QMessageBox.question(self, 'Delete Project', 
-            f"Are you sure you want to delete '{self.input_name.text()}'?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        for bg, stage in configs:
+            c_bg = "#F5F5F5" if is_completed else bg
+            tree = KanbanTree(c_bg, stage, is_completed)
+            tree.heightChanged.connect(lambda h: self.sync_row_height())
+            tree.itemCountChanged.connect(self.update_stats)
+            tree.contentChanged.connect(self.requestSave.emit)
+            self.splitter.addWidget(tree)
+            self.cols.append(tree)
         
-        if reply == QMessageBox.StandardButton.Yes:
-            self.requestDelete.emit(self)
+        layout.addWidget(self.splitter)
+        
+        if is_completed:
+            self.apply_theme("#E0E0E0") 
+        else:
+            self.apply_theme("#FFAB91")
+
+    def sync_row_height(self):
+        max_h = 60
+        for c in self.cols:
+            if c.visual_height > max_h:
+                max_h = c.visual_height
+        self.setFixedHeight(max_h + 10)
 
     def update_stats(self):
-        t = self.col_todo.count_items_recursive(self.col_todo.invisibleRootItem())
-        w = self.col_wip.count_items_recursive(self.col_wip.invisibleRootItem())
-        d = self.col_done.count_items_recursive(self.col_done.invisibleRootItem())
-        self.lbl_stats.setText(f"(Todo: {t} | WIP: {w} | Done: {d})")
+        cnts = []
+        for c in self.cols:
+            k = 0
+            it = QTreeWidgetItemIterator(c)
+            while it.value():
+                k+=1
+                it += 1
+            cnts.append(str(k))
+        self.lbl_stat.setText(f"(T:{cnts[0]}|W:{cnts[1]}|D:{cnts[2]})")
 
-    def update_row_height(self, col_index, height):
-        self.heights[col_index] = height
-        self.setFixedHeight(max(self.heights) + 10)
+    def delete_self(self):
+        if QMessageBox.question(self, "Delete", "Delete Project?") == QMessageBox.StandardButton.Yes:
+            GLOBAL_SYNC.remove_splitter(self.splitter)
+            self.requestDelete.emit(self)
 
     def pick_color(self):
         c = QColorDialog.getColor()
         if c.isValid(): 
-            self.apply_color_theme(c.name())
+            self.apply_theme(c.name())
             self.requestSave.emit()
 
-    def apply_color_theme(self, hex_color):
-        self.current_color = hex_color
-        self.btn_color.setStyleSheet(f"background-color: {hex_color}; border-radius: 12px; border: 2px solid #fff;")
-        self.project_frame.setStyleSheet(f"#ProjectBox {{ background-color: {hex_color}; border-radius: 4px; }}")
-        self.setStyleSheet(f"#RowFrame {{ border: 3px solid {hex_color}; border-radius: 8px; background-color: white; }}")
+    def toggle_font(self):
+        ss = self.inp_name.styleSheet()
+        new_c = "black" if "white" in ss else "white"
+        self.inp_name.setStyleSheet(f"background:transparent; border:none; font-weight:bold; font-size:14px; color:{new_c};")
+        self.lbl_stat.setStyleSheet(f"font-size:10px; color:{new_c};")
+        self.update_font_btn(new_c)
+
+    def update_font_btn(self, color_name):
+        bg = "black" if color_name == "white" else "white"
+        self.btn_font.setStyleSheet(f"background-color: {bg}; border-radius: 8px; border: 1px solid #777;")
+
+    def apply_theme(self, hex_c):
+        self.current_color = hex_c
+        self.btn_color.setStyleSheet(f"background-color: {hex_c}; border-radius: 8px; border: none;")
+        self.header_box.setStyleSheet(f"#ProjectBox {{ background-color: {hex_c}; border-radius: 4px; }}")
+        self.setStyleSheet(f"#RowFrame {{ border: 3px solid {hex_c}; border-radius: 8px; background-color: white; }}")
+        self.update_font_btn("black")
+
+# --- 6. Main Window ---
 
 CSV_FILE = "kanban_data.csv"
 
 class KanbanBoard(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Dynamic Kanban Board v30 (Fully Gray + PIC)")
+        self.setWindowTitle("Dynamic Kanban Board v50")
+        self.resize(1400, 800)
         
-        self.settings = QSettings("MyCompany", "KanbanApp")
-        geom = self.settings.value("geometry")
-        if geom: self.restoreGeometry(geom)
-        else: self.resize(1400, 800)
-
-        central = QWidget()
-        self.setCentralWidget(central)
-        self.main_layout = QVBoxLayout(central)
-        self.create_header(self.main_layout)
-
+        main = QWidget()
+        self.setCentralWidget(main)
+        layout = QVBoxLayout(main)
+        
+        # Headers
+        self.create_header(layout)
+        
+        # Scroll Area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("border: none; background-color: white;")
+        scroll.setStyleSheet("border: none; background: white;")
+        layout.addWidget(scroll)
         
-        self.board_container = QWidget()
-        self.board_layout = QVBoxLayout(self.board_container)
-        self.board_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.board_layout.setSpacing(15)
-        scroll.setWidget(self.board_container)
-        self.main_layout.addWidget(scroll)
+        self.scroll_content = QWidget()
+        self.scroll_layout = QVBoxLayout(self.scroll_content)
+        self.scroll_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        scroll.setWidget(self.scroll_content)
 
         # Footer
-        footer_widget = QWidget()
-        footer_layout = QHBoxLayout(footer_widget)
+        footer = QWidget()
+        flayout = QHBoxLayout(footer)
         
-        btn_style = "background-color: #333; color: white; padding: 10px; font-weight: bold;"
-
-        btn_add = QPushButton("New Project")
-        btn_add.setStyleSheet(btn_style)
-        btn_add.clicked.connect(lambda: self.add_new_project())
+        btn_new = QPushButton("New Project")
+        btn_new.setStyleSheet("background:#333; color:white; padding:10px; font-weight:bold;")
+        btn_new.clicked.connect(lambda: self.add_project())
         
-        btn_refresh = QPushButton("Refresh")
-        btn_refresh.setStyleSheet(btn_style)
-        btn_refresh.clicked.connect(self.refresh_all_dates)
+        btn_ref = QPushButton("Refresh")
+        btn_ref.setStyleSheet("background:#333; color:white; padding:10px; font-weight:bold;")
+        btn_ref.clicked.connect(self.refresh_all)
 
         btn_save = QPushButton("Save")
-        btn_save.setStyleSheet(btn_style)
-        btn_save.clicked.connect(self.manual_save_layout_and_content)
+        btn_save.setStyleSheet("background:#333; color:white; padding:10px; font-weight:bold;")
+        btn_save.clicked.connect(self.save_csv)
 
-        footer_layout.addWidget(btn_add)
-        footer_layout.addWidget(btn_refresh)
-        footer_layout.addWidget(btn_save)
-        self.main_layout.addWidget(footer_widget)
+        flayout.addWidget(btn_new)
+        flayout.addWidget(btn_ref)
+        flayout.addWidget(btn_save)
+        layout.addWidget(footer)
+
+        self.load_csv()
         
-        self.load_from_csv()
+        QTimer.singleShot(100, lambda: GLOBAL_SYNC.force_update())
+
+    def create_header(self, layout):
+        w = QWidget()
+        l = QHBoxLayout(w)
+        l.setContentsMargins(5,0,5,0)
+        sp = QLabel("Project"); sp.setFixedWidth(200)
+        sp.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sp.setStyleSheet("background:#E0E0E0; font-weight:bold; padding:10px; border-radius:5px;")
         
-        splitter_state = self.settings.value("splitterState")
-        if splitter_state and self.header_splitter:
-             self.header_splitter.restoreState(splitter_state)
-             QTimer.singleShot(100, lambda: GLOBAL_SYNC.force_update_all(self.header_splitter.sizes()))
-
-    def closeEvent(self, event):
-        self.settings.setValue("geometry", self.saveGeometry())
-        if self.header_splitter:
-            self.settings.setValue("splitterState", self.header_splitter.saveState())
-        super().closeEvent(event)
-
-    def manual_save_layout_and_content(self):
-        self.save_to_csv()
-        self.settings.setValue("geometry", self.saveGeometry())
-        if self.header_splitter:
-            self.settings.setValue("splitterState", self.header_splitter.saveState())
-
-    def refresh_all_dates(self):
-        for i in range(self.board_layout.count()):
-            w = self.board_layout.itemAt(i).widget()
-            if isinstance(w, ProjectRow):
-                cols = [w.col_todo, w.col_wip, w.col_done, w.col_cancelled]
-                for col in cols:
-                    root = col.invisibleRootItem()
-                    col.recalculate_all_dates_recursive(root)
-        self.save_to_csv()
-
-    def delete_project_row(self, row_widget):
-        GLOBAL_SYNC.remove_splitter(row_widget.splitter)
-        self.board_layout.removeWidget(row_widget)
-        row_widget.deleteLater()
-        self.save_to_csv()
-
-    def create_header(self, parent_layout):
-        h_widget = QWidget()
-        h_layout = QHBoxLayout(h_widget)
-        h_layout.setContentsMargins(5, 0, 5, 0)
-        h_layout.setSpacing(5)
-
-        spacer = QLabel("Project")
-        spacer.setFixedWidth(200)
-        spacer.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        spacer.setStyleSheet("background-color: #E0E0E0; font-weight: bold; padding: 10px; border-radius: 5px; color: #000;")
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        GLOBAL_SYNC.add_splitter(splitter)
         
-        self.header_splitter = QSplitter(Qt.Orientation.Horizontal)
-        titles = [("Todo", "#2196F3"), ("WIP", "#FFC107"), ("Done", "#4CAF50"), ("Cancelled", "#9E9E9E")]
-        for title, color in titles:
-            lbl = QLabel(title)
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            fg = "white" if title != "WIP" else "black"
-            lbl.setStyleSheet(f"background-color: {color}; font-weight: bold; padding: 10px; border-radius: 5px; color: {fg};")
-            self.header_splitter.addWidget(lbl)
-        
-        GLOBAL_SYNC.add_splitter(self.header_splitter)
-        h_layout.addWidget(spacer)
-        h_layout.addWidget(self.header_splitter)
-        parent_layout.addWidget(h_widget)
+        for t, c in [("Todo","#2196F3"), ("WIP","#FFC107"), ("Done","#4CAF50")]:
+            lb = QLabel(t)
+            lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            fg = "black" if t=="WIP" else "white"
+            lb.setStyleSheet(f"background:{c}; color:{fg}; font-weight:bold; padding:10px; border-radius:5px;")
+            splitter.addWidget(lb)
+            
+        l.addWidget(sp)
+        l.addWidget(splitter)
+        layout.addWidget(w)
 
-    def add_new_project(self, name="New Project", color="#FFAB91"):
-        row = ProjectRow(name, self.board_layout)
-        row.apply_color_theme(color)
-        row.requestSave.connect(self.save_to_csv)
-        row.requestDelete.connect(self.delete_project_row)
-        self.board_layout.addWidget(row)
+    def add_project(self, name="New Project", color="#FFAB91", is_completed=False):
+        row = ProjectRow(name, is_completed)
+        if color: row.apply_theme(color)
+        row.requestSave.connect(self.save_csv)
+        row.requestDelete.connect(self.delete_row)
+        
+        count = self.scroll_layout.count()
+        idx = count
+        if count > 0:
+            last_w = self.scroll_layout.itemAt(count-1).widget()
+            if isinstance(last_w, ProjectRow) and last_w.is_completed:
+                idx = count - 1
+        if is_completed: idx = count
+
+        self.scroll_layout.insertWidget(idx, row)
         return row
 
-    def save_to_csv(self):
-        rows_data = []
-        for i in range(self.board_layout.count()):
-            w = self.board_layout.itemAt(i).widget()
-            if isinstance(w, ProjectRow):
-                p_name = w.input_name.text()
-                p_color = w.current_color
-                def collect_items(tree, status):
-                    items = []
-                    root = tree.invisibleRootItem()
-                    def recurse(parent, parent_id):
-                        for k in range(parent.childCount()):
-                            child = parent.child(k)
-                            d = child.data(0, Qt.ItemDataRole.UserRole)
-                            items.append({
-                                'project': p_name, 'project_color': p_color, 'status': status,
-                                'id': d['id'], 'name': d['name'], 'pic': d.get('pic', ''), 
-                                'priority': d['priority'], 'start': d['start'], 
-                                'duration': d['duration'], 'end': d['end'],
-                                'parent_id': parent_id
-                            })
-                            recurse(child, d['id'])
-                    recurse(root, "")
-                    return items
-                rows_data.extend(collect_items(w.col_todo, "Todo"))
-                rows_data.extend(collect_items(w.col_wip, "WIP"))
-                rows_data.extend(collect_items(w.col_done, "Done"))
-                rows_data.extend(collect_items(w.col_cancelled, "Cancelled"))
-                if not rows_data and self.board_layout.count() > 0:
-                     rows_data.append({'project': p_name, 'project_color': p_color, 'id': 'PROJECT_ONLY'})
-        try:
-            with open(CSV_FILE, mode='w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=[
-                    'project', 'project_color', 'status', 'id', 'name', 'pic', 'priority', 
-                    'start', 'duration', 'end', 'parent_id'
-                ])
-                writer.writeheader()
-                for r in rows_data:
-                    if r.get('id') == 'PROJECT_ONLY':
-                        writer.writerow({k: r.get(k) for k in ['project', 'project_color', 'id']})
-                    else:
-                        writer.writerow(r)
-        except Exception as e:
-            print(f"Error saving: {e}")
+    def delete_row(self, row):
+        GLOBAL_SYNC.remove_splitter(row.splitter)
+        row.deleteLater()
+        self.save_csv()
 
-    def load_from_csv(self):
-        if not os.path.exists(CSV_FILE):
-            self.add_new_project("Alpha Project")
-            return
+    def refresh_all(self):
+        for i in range(self.scroll_layout.count()):
+            w = self.scroll_layout.itemAt(i).widget()
+            if isinstance(w, ProjectRow):
+                for col in w.cols:
+                     self.recursive_update_dates(col, col.invisibleRootItem())
+        self.save_csv()
+
+    def recursive_update_dates(self, tree, item):
+        c = item.childCount()
+        for i in range(c):
+            self.recursive_update_dates(tree, item.child(i))
+        if item is not tree.invisibleRootItem():
+            tree.update_parent_dates(item)
+
+    def save_csv(self):
+        data = []
+        for i in range(self.scroll_layout.count()):
+            w = self.scroll_layout.itemAt(i).widget()
+            if isinstance(w, ProjectRow):
+                p_name = w.inp_name.text()
+                p_col = w.current_color
+                is_comp = w.is_completed
+                
+                for col in w.cols:
+                    it = QTreeWidgetItemIterator(col)
+                    while it.value():
+                        item = it.value()
+                        d = item.data(0, Qt.ItemDataRole.UserRole)
+                        pid = ""
+                        if item.parent():
+                            pd = item.parent().data(0, Qt.ItemDataRole.UserRole)
+                            pid = pd['id']
+                        
+                        row_data = d.copy()
+                        row_data['project'] = p_name
+                        row_data['project_color'] = p_col
+                        row_data['is_completed_project'] = str(is_comp)
+                        row_data['parent_id'] = pid
+                        data.append(row_data)
+                        it += 1
+                
+                if not data or data[-1]['project'] != p_name:
+                     data.append({
+                         'id': 'PROJECT_MARKER', 'project': p_name, 
+                         'project_color': p_col, 'is_completed_project': str(is_comp)
+                     })
+
         try:
-            with open(CSV_FILE, mode='r', encoding='utf-8') as f:
+            with open(CSV_FILE, 'w', newline='', encoding='utf-8') as f:
+                fields = ['id','name','pic','priority','start','duration','end','stage',
+                          'project','project_color','is_completed_project','parent_id']
+                writer = csv.DictWriter(f, fieldnames=fields)
+                writer.writeheader()
+                for d in data:
+                    out = {k: d.get(k,'') for k in fields}
+                    writer.writerow(out)
+        except Exception as e:
+            print("Save failed:", e)
+
+    def load_csv(self):
+        while self.scroll_layout.count():
+            item = self.scroll_layout.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+
+        if not os.path.exists(CSV_FILE):
+            self.add_project("Alpha Project")
+            self.add_project("Completed", "#E0E0E0", True)
+            return
+
+        try:
+            with open(CSV_FILE, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 rows = list(reader)
-        except:
-            self.add_new_project("Alpha Project")
-            return
+        except: return
 
-        project_map = {}
-        seen = []
+        proj_map = {}
+        created_names = []
         for r in rows:
-            if r['project'] not in seen:
-                seen.append(r['project'])
-                project_map[r['project']] = self.add_new_project(r['project'], r.get('project_color', '#FFAB91'))
+            p_name = r['project']
+            if p_name not in created_names:
+                is_comp = (r.get('is_completed_project') == 'True')
+                row = self.add_project(p_name, r.get('project_color'), is_comp)
+                proj_map[p_name] = row
+                created_names.append(p_name)
 
         item_map = {}
-        pending = []
+        orphan_list = [] 
+
         for r in rows:
-            if r['id'] == 'PROJECT_ONLY': continue
-            row = project_map.get(r['project'])
+            if r['id'] == 'PROJECT_MARKER': continue
+            
+            row = proj_map.get(r['project'])
             if not row: continue
             
-            tree = None
-            if r['status'] == "Todo": tree = row.col_todo
-            elif r['status'] == "WIP": tree = row.col_wip
-            elif r['status'] == "Done": tree = row.col_done
-            elif r['status'] == "Cancelled": tree = row.col_cancelled
-            if not tree: continue
-
-            data = {k: r.get(k, '') for k in ['id', 'name', 'pic', 'priority', 'start', 'duration', 'end']}
+            stage = r.get('stage', '1')
+            tree = row.cols[0] 
+            if stage == '1': tree = row.cols[0]
+            elif stage == '2': tree = row.cols[1]
+            elif stage == '3': tree = row.cols[2]
+            
+            data = {
+                'id': r['id'], 'name': r['name'], 'pic': r['pic'],
+                'priority': r['priority'], 'start': r['start'],
+                'duration': r['duration'], 'end': r['end'],
+                'stage': stage
+            }
+            
             item = QTreeWidgetItem()
             item.setData(0, Qt.ItemDataRole.UserRole, data)
-            item.setSizeHint(0, QSize(200, 44))
             item_map[r['id']] = item
             
-            if not r['parent_id']:
+            pid = r.get('parent_id')
+            if not pid:
                 tree.addTopLevelItem(item)
-                tree.create_card(item, data, is_new=False)
+                tree.create_widget(item, data, is_new=False)
+                item.setExpanded(True)
             else:
-                pending.append((item, r['parent_id'], tree, data))
+                orphan_list.append((item, pid, tree, data))
 
-        for item, pid, tree, data in pending:
+        for item, pid, tree, data in orphan_list:
             if pid in item_map:
                 parent = item_map[pid]
                 parent.addChild(item)
-                tree.create_card(item, data, is_new=False)
+                tree.create_widget(item, data, is_new=False)
                 parent.setExpanded(True)
+                item.setExpanded(True)
             else:
                 tree.addTopLevelItem(item)
-                tree.create_card(item, data, is_new=False)
+                tree.create_widget(item, data, is_new=False)
 
-        for row in project_map.values():
-            for col in [row.col_todo, row.col_wip, row.col_done, row.col_cancelled]:
-                col.report_height()
-                col.itemCountChanged.emit()
+        QTimer.singleShot(100, lambda: GLOBAL_SYNC.force_update())
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
