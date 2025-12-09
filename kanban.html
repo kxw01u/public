@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kanban Board v27</title>
+    <title>Kanban Board v28</title>
     
     <!-- Favicon -->
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' fill='%232563eb'><rect x='10' y='10' width='20' height='80' rx='5'/><rect x='40' y='10' width='20' height='80' rx='5'/><rect x='70' y='10' width='20' height='80' rx='5'/></svg>">
@@ -115,7 +115,7 @@
         const calculateAge = (dateString) => {
         if (!dateString) return 0;
         const created = new Date(dateString);
-        if (isNaN(created.getTime())) return 0; // Fixed: using created instead of date
+        if (isNaN(created.getTime())) return 0;
         const now = new Date();
         const diffTime = Math.abs(now - created);
         const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
@@ -181,7 +181,7 @@
         'heavy': { label: 'Heavy', color: 'bg-orange-50 text-orange-800 border-orange-200', fill: 'bg-orange-600', border: 'border-orange-600' },
         };
 
-        // UNIFIED COLOR PALETTE (Mapping Backgrounds for Projects and Lines for Tasks)
+        // UNIFIED COLOR PALETTE
         const COLOR_PALETTE = [
             { id: 'white',  bg: 'bg-white',      border: 'border-gray-200',   line: 'bg-gray-400' },
             { id: 'gray',   bg: 'bg-gray-100',   border: 'border-gray-300',   line: 'bg-gray-600' },
@@ -202,7 +202,7 @@
             { id: 'rose',   bg: 'bg-rose-100',   border: 'border-rose-200',   line: 'bg-rose-600' }
         ];
 
-        // Compatibility Helper: Map background colors to border colors for legacy lookups
+        // Compatibility Helper
         const PROJECT_BORDER_COLORS = COLOR_PALETTE.reduce((acc, item) => {
             acc[item.bg] = item.border;
             return acc;
@@ -210,23 +210,29 @@
 
         // --- Sub-Components ---
 
-        // Updated Color Picker: Topmost Layer, Grid Layout
+        // Updated Color Picker: LINEAR LAYOUT
         const ColorPicker = ({ onSelect, onClose, type = 'line' }) => {
+            // FIX 1 & 2: Stop propagation everywhere to prevent drag/click issues
+            const stopPropagation = (e) => {
+                e.stopPropagation();
+                e.nativeEvent.stopImmediatePropagation();
+            };
+
             return (
                 <React.Fragment>
-                {/* Backdrop to close on click-outside */}
+                {/* Backdrop */}
                 <div
-                    className="fixed inset-0 z-[100]"
-                    onMouseDown={(e) => { e.stopPropagation(); onClose(); }}
+                    className="fixed inset-0 z-[9998] cursor-default"
+                    onMouseDown={stopPropagation}
+                    onClick={(e) => { stopPropagation(e); onClose(); }}
                 ></div>
                 
                 {/* Picker Container */}
                 <div
-                    className="absolute z-[101] mt-2 p-3 bg-white rounded-lg shadow-2xl border border-gray-200 grid grid-cols-5 gap-2 animate-in fade-in zoom-in-95 duration-100"
-                    onMouseDown={(e) => e.stopPropagation()}
+                    className="absolute z-[9999] mt-2 p-2 bg-white rounded-xl shadow-2xl border border-gray-200 flex flex-row gap-2 items-center animate-in fade-in zoom-in-95 duration-100 overflow-x-auto max-w-[85vw] no-scrollbar"
+                    onMouseDown={stopPropagation}
+                    onClick={stopPropagation}
                     style={{ 
-                        // Basic positioning - in a real app might need Popper.js, 
-                        // but this ensures it usually pops nicely near the button
                         left: type === 'bg' ? '100%' : 'auto', 
                         right: type === 'line' ? '0' : 'auto', 
                         marginLeft: type === 'bg' ? '8px' : '0',
@@ -240,10 +246,9 @@
                         return (
                             <button
                                 key={c.id}
-                                onMouseDown={(e) => e.stopPropagation()}
+                                onMouseDown={stopPropagation}
                                 onClick={(e) => {
-                                    e.stopPropagation();
-                                    e.nativeEvent.stopImmediatePropagation();
+                                    stopPropagation(e);
                                     onSelect(valueToReturn);
                                     onClose();
                                 }}
@@ -258,7 +263,7 @@
         };
 
         const DonutChart = ({ data, size = 120, showLegend = true }) => {
-        let accumulatedAngle = 0;
+        let accumulatedAngle = 0; 
         const total = data.reduce((acc, curr) => acc + curr.value, 0);
 
         if (total === 0) return (
@@ -270,22 +275,34 @@
         return (
             <div className={`flex ${showLegend ? 'items-center justify-center gap-6' : 'flex-col items-center'}`}>
             <div className="relative shrink-0" style={{ width: size, height: size }}>
-                <svg viewBox="0 0 100 100" className="transform -rotate-90 w-full h-full">
+                <svg viewBox="0 0 100 100" className="w-full h-full">
                 {data.map((slice, index) => {
                     if (slice.value === 0) return null;
                     const percentage = slice.value / total;
                     const angle = percentage * 360;
+                    
+                    // Logic: Anti-clockwise from 12 o'clock (-90 deg)
+                    const startAngle = -90 - accumulatedAngle;
+                    const endAngle = startAngle - angle;
+                    
+                    const r = 50; 
+                    const cx = 50; 
+                    const cy = 50;
+
+                    const startX = cx + r * Math.cos((Math.PI * startAngle) / 180);
+                    const startY = cy + r * Math.sin((Math.PI * startAngle) / 180);
+                    const endX = cx + r * Math.cos((Math.PI * endAngle) / 180);
+                    const endY = cy + r * Math.sin((Math.PI * endAngle) / 180);
+
                     const largeArcFlag = percentage > 0.5 ? 1 : 0;
-                    const startX = 50 + 50 * Math.cos((Math.PI * accumulatedAngle) / 180);
-                    const startY = 50 + 50 * Math.sin((Math.PI * accumulatedAngle) / 180);
+                    const sweepFlag = 0; 
+
                     accumulatedAngle += angle;
-                    const endX = 50 + 50 * Math.cos((Math.PI * accumulatedAngle) / 180);
-                    const endY = 50 + 50 * Math.sin((Math.PI * accumulatedAngle) / 180);
 
                     return (
                     <path
                         key={index}
-                        d={`M 50 50 L ${startX} ${startY} A 50 50 0 ${largeArcFlag} 1 ${endX} ${endY} Z`}
+                        d={`M ${cx} ${cy} L ${startX} ${startY} A ${r} ${r} 0 ${largeArcFlag} ${sweepFlag} ${endX} ${endY} Z`}
                         fill={slice.color}
                         stroke="white"
                         strokeWidth="1"
@@ -369,6 +386,7 @@
             onDragOver={handleDragOver}
             onDrop={handleDrop}
             onClick={(e) => {
+                // Main card click
                 e.stopPropagation();
                 onEdit(task);
             }}
@@ -400,13 +418,14 @@
                 <div className="flex gap-1 items-center relative z-[60]">
                     <div className="relative">
                         <button
-                        onMouseDown={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); }}
                         onClick={(e) => {
                             e.stopPropagation();
+                            e.nativeEvent.stopImmediatePropagation();
                             e.preventDefault();
                             toggleColorPicker(task.id);
                         }}
-                        className="p-1 hover:bg-gray-100 rounded-full text-gray-400 transition-all opacity-0 group-hover:opacity-100 z-30"
+                        className="p-1 hover:bg-gray-100 rounded-full text-gray-400 transition-all opacity-0 group-hover:opacity-100 z-30 relative"
                         title="Change Line Color"
                         >
                         <Palette size={12} />
@@ -457,7 +476,7 @@
                 {(task.status === 'todo' || task.status === 'wip') && (
                     <>
                     <button
-                        onMouseDown={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); }}
                         onClick={(e) => {
                         e.stopPropagation();
                         e.nativeEvent.stopImmediatePropagation();
@@ -469,7 +488,7 @@
                         <Check size={14} />
                     </button>
                     <button
-                        onMouseDown={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); }}
                         onClick={(e) => {
                         e.stopPropagation();
                         e.nativeEvent.stopImmediatePropagation();
@@ -484,7 +503,7 @@
                 )}
                 {(task.status === 'done' || task.status === 'cancel') && (
                     <button
-                    onMouseDown={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); }}
                     onClick={(e) => {
                         e.stopPropagation();
                         e.nativeEvent.stopImmediatePropagation();
@@ -497,7 +516,7 @@
                     </button>
                 )}
                 <button
-                    onMouseDown={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => { e.stopPropagation(); e.nativeEvent.stopImmediatePropagation(); }}
                     onClick={(e) => {
                     e.stopPropagation();
                     e.nativeEvent.stopImmediatePropagation();
@@ -956,9 +975,11 @@
                             onDragEnd={onDragEnd}
                             className={`transition-all ${draggedItem === index ? 'opacity-50 border-2 border-dashed border-blue-300 rounded-lg' : ''}`}
                         >
-                            <div className="flex items-center gap-2 mb-1 cursor-grab active:cursor-grabbing hover:bg-gray-50 rounded px-1 -ml-1 w-fit group">
-                                <GripVertical size={12} className="text-gray-300 group-hover:text-gray-500"/>
-                                {renderField(key)}
+                            <div className="flex items-center gap-2 mb-1 cursor-grab active:cursor-grabbing hover:bg-gray-50 rounded px-1 -ml-1 w-full group">
+                                <GripVertical size={12} className="text-gray-300 group-hover:text-gray-500 shrink-0"/>
+                                <div className="flex-1 w-full">
+                                    {renderField(key)}
+                                </div>
                             </div>
                         </div>
                     ))}
@@ -1857,9 +1878,10 @@
             
             const borderColorClass = project.color ? project.color.replace('bg-', 'border-').replace('100', '200') : 'border-gray-200';
 
+            // FIXED: Removed 'overflow-hidden' from className below to prevent clipping of the color picker
             return (
-            <div key={project.id} className={`rounded-xl shadow-sm border border-gray-200 overflow-hidden ${project.color || 'bg-white'} mb-4 ${!isMainBoard ? `border-l-4 ${borderColorClass}` : ''}`}>
-                <div className="bg-white/60 p-4 border-b border-gray-200/60 flex justify-between items-center backdrop-blur-sm group">
+            <div key={project.id} className={`rounded-xl shadow-sm border border-gray-200 ${project.color || 'bg-white'} mb-4 ${!isMainBoard ? `border-l-4 ${borderColorClass}` : ''}`}>
+                <div className="bg-white/60 p-4 border-b border-gray-200/60 flex justify-between items-center backdrop-blur-sm group rounded-t-xl relative z-[10]">
                 <div className="flex items-center gap-3">
                     {isMainBoard && (
                         <button 
@@ -2005,7 +2027,7 @@
             <header className="h-16 bg-white border-b flex items-center justify-between px-6 shadow-sm z-20 shrink-0">
                 <div className="flex items-center gap-8">
                 <h1 className="text-xl font-black text-gray-800 tracking-wider flex items-center gap-2">
-                    Kanban Board v27
+                    Kanban Board v28
                 </h1>
 
                 <nav className="flex gap-1 bg-gray-100/50 p-1 rounded-lg">
@@ -2137,7 +2159,7 @@
                 )}
             </main>
 
-            <div className="fixed bottom-2 right-2 text-[10px] text-gray-300">v27.0</div>
+            <div className="fixed bottom-2 right-2 text-[10px] text-gray-300">v28.0</div>
 
             <TaskModal 
                 isOpen={isModalOpen} 
