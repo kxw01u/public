@@ -1,1 +1,820 @@
 
+import sys
+import json
+import os
+import webbrowser
+import subprocess
+import shlex
+import uuid
+import csv
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QSplitter,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QHBoxLayout,
+    QStyledItemDelegate, QLineEdit, QComboBox, QPushButton, QLabel,
+    QMessageBox, QColorDialog, QAbstractItemView, QStyle, QFrame, 
+    QHeaderView, QStyleOptionViewItem, QFileDialog, QStyleOptionHeader
+)
+from PyQt6.QtGui import QColor, QBrush, QPalette, QIcon, QAction, QPainter, QPen, QFont
+from PyQt6.QtCore import (
+    Qt, QSize, QUrl, QEvent, pyqtSignal, QRect,
+    QMimeData, QByteArray, QDataStream, QIODevice
+)
+
+# --- LIBRARY CHECK ---
+HAS_QTA = False
+try:
+    import qtawesome as qta
+    HAS_QTA = True
+except ImportError:
+    print("qtawesome not found. Using standard icons/text.")
+
+# --- CONFIGURATION ---
+DATA_FILE = "sessions.json"
+PUTTY_PATH = "C:\\Program Files\\PuTTY\\putty.exe" 
+
+# --- ENUM for Column Indices ---
+COL_TITLE = 0
+COL_TYPE = 1
+COL_ENV = 2
+COL_C1 = 3   # Row Background Color (Swatch)
+COL_C2 = 4   # Row Font Color (Swatch)
+COL_DEST = 5
+COL_PORT = 6
+COL_LOGIN = 7
+COL_PASSWORD = 8
+COL_PATH = 9
+# 5 Separate Action Columns
+COL_ACT_RUN = 10
+COL_ACT_DUP = 11
+COL_ACT_DEL = 12
+COL_ACT_UP = 13
+COL_ACT_DOWN = 14
+COL_COUNT = 15
+
+# --- Custom Header View for Merged Actions ---
+class MergedHeaderView(QHeaderView):
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+
+    def paintSection(self, painter, rect, logicalIndex):
+        # Identify Action Columns (10-14)
+        if COL_ACT_RUN <= logicalIndex <= COL_ACT_DOWN:
+            painter.save()
+            
+            # 1. Draw Standard Background for this section
+            opt = QStyleOptionHeader()
+            self.initStyleOption(opt)
+            opt.rect = rect
+            opt.section = logicalIndex
+            self.style().drawControl(QStyle.ControlElement.CE_HeaderSection, opt, painter, self)
+            
+            # 2. Draw Text "Actions" ONLY when painting the middle column (Delete/12)
+            # We disable clipping to allow the text to span across neighbor columns
+            if logicalIndex == COL_ACT_DEL:
+                painter.setClipping(False) # Allow drawing outside this section's rect
+                
+                # Calculate the span rect (Assuming fixed 30px width for all 5 columns)
+                # We want the text to be centered over the 5 columns.
+                # Current rect is the middle one.
+                # We expand left by 2 widths and right by 2 widths.
+                col_width = rect.width()
+                span_rect = QRect(rect)
+                span_rect.setLeft(rect.left() - 2 * col_width)
+                span_rect.setWidth(5 * col_width)
+                
+                opt.text = "Actions"
+                opt.rect = span_rect
+                self.style().drawControl(QStyle.ControlElement.CE_HeaderLabel, opt, painter, self)
+            
+            painter.restore()
+        else:
+            # Standard painting for other columns
+            super().paintSection(painter, rect, logicalIndex)
+
+# --- Custom Delegate ---
+class EditDelegate(QStyledItemDelegate):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.session_types = ["Group", "SSH", "TELNET", "PASSWORD", "WEB", "APP"]
+        self.env_types = ["PROD", "UAT"]
+
+    def createEditor(self, parent, option, index):
+        col = index.column()
+        
+        # Block editing Action / Colors
+        if col >= COL_ACT_RUN or col in (COL_C1, COL_C2): return None
+
+        type_index = index.siblingAtColumn(COL_TYPE)
+        current_type = type_index.data(Qt.ItemDataRole.EditRole) 
+        if not current_type: current_type = type_index.text()
+
+        if current_type == "Group" and col not in (COL_TITLE, COL_TYPE, COL_ENV):
+            return None 
+        if current_type == "PASSWORD" and col == COL_PATH:
+            return None
+        if current_type == "TELNET" and col == COL_PATH:
+            return None
+
+        if col == COL_TYPE:
+            editor = QComboBox(parent)
+            editor.addItems(self.session_types)
+            return editor
+        elif col == COL_ENV:
+            editor = QComboBox(parent)
+            editor.addItems(self.env_types)
+            return editor
+        elif col == COL_PASSWORD:
+            editor = QLineEdit(parent)
+            editor.setEchoMode(QLineEdit.EchoMode.Password)
+            return editor
+            
+        return super().createEditor(parent, option, index)
+
+    def setEditorData(self, editor, index):
+        if index.column() in (COL_TYPE, COL_ENV) and isinstance(editor, QComboBox):
+            text = index.data(Qt.ItemDataRole.DisplayRole)
+            idx = editor.findText(text)
+            if idx >= 0: editor.setCurrentIndex(idx)
+        else:
+            super().setEditorData(editor, index)
+
+    def setModelData(self, editor, model, index):
+        if index.column() in (COL_TYPE, COL_ENV) and isinstance(editor, QComboBox):
+            model.setData(index, editor.currentText(), Qt.ItemDataRole.EditRole)
+        else:
+            super().setModelData(editor, model, index)
+
+    def paint(self, painter, option, index):
+        col = index.column()
+        painter.save()
+        
+        # --- 1. GEOMETRY CALCULATION ---
+        bg_rect = QRect(option.rect)
+        bg_rect.setHeight(bg_rect.height() - 1)
+        bg_rect.setWidth(bg_rect.width() - 1)
+
+        # --- 2. BACKGROUND PAINTING ---
+        bg_brush = index.data(Qt.ItemDataRole.BackgroundRole)
+        
+        # C1/C2: White pad. Actions: White pad (widgets cover it mostly, but good for gaps).
+        if col in (COL_C1, COL_C2) or col >= COL_ACT_RUN:
+            painter.fillRect(bg_rect, Qt.GlobalColor.white)
+        elif bg_brush:
+            painter.fillRect(bg_rect, bg_brush)
+
+        # Handle Selection Highlight (Border Only)
+        if option.state & QStyle.StateFlag.State_Selected:
+            pen = QPen(option.palette.highlight().color(), 2)
+            r = bg_rect.adjusted(1,1,-1,-1)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(r)
+
+        # --- 3. CONTENT PAINTING ---
+        if col in (COL_C1, COL_C2):
+            color_hex = index.data(Qt.ItemDataRole.UserRole)
+            if color_hex:
+                color = QColor(color_hex)
+                swatch_rect = QRect(0, 0, 20, 14)
+                swatch_rect.moveCenter(bg_rect.center())
+                painter.setBrush(QBrush(color))
+                painter.setPen(QPen(Qt.GlobalColor.black, 0.5))
+                painter.drawRect(swatch_rect)
+        
+        elif col == COL_TYPE:
+            text = index.data(Qt.ItemDataRole.DisplayRole)
+            if text != "Group":
+                self.draw_default_text(painter, option, index)
+        
+        elif col < COL_ACT_RUN: # Don't draw text for action columns (handled by widgets)
+             self.draw_default_text(painter, option, index)
+
+        # --- 4. BORDERS (GRID LINES) ---
+        grid_color = QColor("#d0d0d0") 
+        painter.setPen(QPen(grid_color, 1))
+        painter.drawLine(option.rect.bottomLeft(), option.rect.bottomRight())
+        painter.drawLine(option.rect.topRight(), option.rect.bottomRight())
+
+        painter.restore()
+
+    def draw_default_text(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        if opt.state & QStyle.StateFlag.State_Selected:
+            opt.state &= ~QStyle.StateFlag.State_Selected
+        super().paint(painter, opt, index)
+
+# --- Custom Tree Widget ---
+class SessionTreeWidget(QTreeWidget):
+    itemDropped = pyqtSignal(QTreeWidgetItem)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.item_map = {}
+        
+        self.setStyleSheet("QTreeView { border: 1px solid #ccc; gridline-color: #d0d0d0; }")
+        
+        # Apply Custom Merged Header
+        self.setHeader(MergedHeaderView(Qt.Orientation.Horizontal, self))
+        
+    def mimeData(self, items):
+        mime_data = QMimeData()
+        if items and items[0].data(0, Qt.ItemDataRole.UserRole) is not None:
+            item_id = items[0].data(0, Qt.ItemDataRole.UserRole)
+            mime_data.setData("application/x-sessionkeeper-itemid", QByteArray(item_id.encode('utf-8')))
+        return mime_data
+
+    def dropMimeData(self, parent, row, data, action):
+        if action != Qt.DropAction.MoveAction or not data.hasFormat("application/x-sessionkeeper-itemid"):
+            return False
+
+        item_id = data.data("application/x-sessionkeeper-itemid").data().decode('utf-8')
+        dragged_item = self.item_map.get(item_id)
+        if not dragged_item: return False
+
+        dragged_type = dragged_item.data(COL_TYPE, Qt.ItemDataRole.EditRole) 
+        if not dragged_type: dragged_type = dragged_item.text(COL_TYPE)
+
+        target_item = parent 
+        new_parent = self.invisibleRootItem()
+        new_index = row 
+
+        if target_item:
+            target_type = target_item.data(COL_TYPE, Qt.ItemDataRole.EditRole)
+            if not target_type: target_type = target_item.text(COL_TYPE)
+
+            if target_type == 'Group':
+                new_parent = target_item
+            else:
+                new_parent = target_item.parent() or self.invisibleRootItem()
+                if row == -1:
+                    new_index = new_parent.indexOfChild(target_item) + 1
+                else:
+                    new_index = row
+
+        if dragged_type == 'Group':
+            if new_parent != self.invisibleRootItem():
+                QMessageBox.warning(self, "Invalid Drop", "Groups must be at the top level.")
+                return False
+        else:
+            new_parent_type = new_parent.data(COL_TYPE, Qt.ItemDataRole.EditRole)
+            if not new_parent_type and new_parent != self.invisibleRootItem():
+                 new_parent_type = new_parent.text(COL_TYPE)
+            
+            if new_parent != self.invisibleRootItem() and new_parent_type != 'Group':
+                 QMessageBox.warning(self, "Invalid Drop", "Sessions can only be grouped under Group entries.")
+                 return False
+
+        old_parent = dragged_item.parent() or self.invisibleRootItem()
+        old_parent.removeChild(dragged_item)
+
+        if new_index < 0:
+            new_parent.addChild(dragged_item)
+        else:
+            new_parent.insertChild(new_index, dragged_item)
+            
+        self.setCurrentItem(dragged_item)
+        self.itemDropped.emit(dragged_item)
+        
+        if self.window() and hasattr(self.window(), 'save_sessions'):
+            self.window().save_sessions()
+            
+        return True
+
+# --- Main Application Window ---
+class SessionKeeperApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Session Keeper V2 (PyQt6)")
+        self.setGeometry(100, 100, 1600, 800)
+        self.sessions_data = {} 
+
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.main_layout = QVBoxLayout(self.central_widget)
+
+        self.setup_ui()
+        self.load_sessions()
+
+    def setup_ui(self):
+        toolbar = QHBoxLayout()
+        
+        btn_add_grp = QPushButton("+ Group")
+        btn_add_grp.setFixedSize(100, 30)
+        btn_add_grp.setStyleSheet("""
+            QPushButton { background-color: #ff9800; color: white; font-weight: bold; border-radius: 4px; }
+            QPushButton:hover { background-color: #f57c00; }
+        """)
+        btn_add_grp.clicked.connect(lambda: self.add_record(is_group=True))
+
+        btn_add_sess = QPushButton("+ Session")
+        btn_add_sess.setFixedSize(100, 30)
+        btn_add_sess.setStyleSheet("""
+            QPushButton { background-color: #2196f3; color: white; font-weight: bold; border-radius: 4px; }
+            QPushButton:hover { background-color: #1976d2; }
+        """)
+        btn_add_sess.clicked.connect(lambda: self.add_record(is_group=False))
+        
+        btn_import = QPushButton("Import")
+        btn_import.setFixedSize(80, 30)
+        btn_import.setStyleSheet("""
+            QPushButton { background-color: #9C27B0; color: white; font-weight: bold; border-radius: 4px; }
+            QPushButton:hover { background-color: #7B1FA2; }
+        """)
+        btn_import.clicked.connect(self.import_csv)
+
+        btn_export = QPushButton("Export")
+        btn_export.setFixedSize(80, 30)
+        btn_export.setStyleSheet("""
+            QPushButton { background-color: #00BCD4; color: white; font-weight: bold; border-radius: 4px; }
+            QPushButton:hover { background-color: #0097A7; }
+        """)
+        btn_export.clicked.connect(self.export_csv)
+
+        btn_save = QPushButton("Save")
+        btn_save.setFixedSize(100, 30)
+        btn_save.setStyleSheet("""
+            QPushButton { background-color: #4CAF50; color: white; font-weight: bold; border-radius: 4px; }
+            QPushButton:hover { background-color: #45a049; }
+        """)
+        btn_save.clicked.connect(self.save_sessions)
+
+        toolbar.addWidget(btn_add_grp)
+        toolbar.addWidget(btn_add_sess)
+        toolbar.addSpacing(20)
+        toolbar.addWidget(btn_import)
+        toolbar.addWidget(btn_export)
+        toolbar.addStretch()
+        toolbar.addWidget(btn_save)
+        
+        self.main_layout.addLayout(toolbar)
+
+        self.tree = SessionTreeWidget(parent=self.central_widget)
+        # 5 Separate columns for Actions, with empty labels (Action text handled by MergedHeaderView)
+        self.tree.setHeaderLabels([
+            "Title", "Type", "Env", "C1", "C2", 
+            "Destination", "Port", "Login", "Password", "App Path", 
+            "", "", "", "", ""
+        ])
+        
+        header = self.tree.header()
+        
+        self.tree.setColumnWidth(COL_TITLE, 200)
+        self.tree.setColumnWidth(COL_TYPE, 80)
+        self.tree.setColumnWidth(COL_ENV, 80)
+        self.tree.setColumnWidth(COL_C1, 40)
+        self.tree.setColumnWidth(COL_C2, 40)
+        self.tree.setColumnWidth(COL_DEST, 140)
+        self.tree.setColumnWidth(COL_PORT, 60)
+        
+        # 5 small fixed columns for actions
+        action_col_width = 30
+        for col in range(COL_ACT_RUN, COL_ACT_DOWN + 1):
+            self.tree.setColumnWidth(col, action_col_width)
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+        
+        header.setSectionResizeMode(COL_TITLE, QHeaderView.ResizeMode.Stretch)
+        
+        self.delegate = EditDelegate(self.tree)
+        self.tree.setItemDelegate(self.delegate)
+        
+        self.tree.itemChanged.connect(self.on_item_changed)
+        self.tree.itemDoubleClicked.connect(self.on_item_double_clicked)
+        self.tree.itemDropped.connect(self.setup_row_buttons)
+        self.tree.itemClicked.connect(self.on_item_single_clicked)
+        
+        self.main_layout.addWidget(self.tree)
+
+    def on_item_single_clicked(self, item, column):
+        if column not in (COL_C1, COL_C2) and column < COL_ACT_RUN:
+            self.tree.editItem(item, column)
+
+    def setup_row_buttons(self, item):
+        """Creates individual buttons for each of the 5 action columns."""
+        style = self.style()
+        
+        # Helper to create and set button
+        def set_btn(col, icon_name, color, fallback_text, fallback_icon_std, tooltip, callback, enabled=True, visible=True):
+            btn = QPushButton()
+            btn.setFixedSize(24, 24)
+            btn.setToolTip(tooltip)
+            btn.setFlat(True)
+            
+            if not visible:
+                btn.setVisible(False)
+            elif not enabled:
+                btn.setEnabled(False)
+            
+            if visible:
+                if HAS_QTA:
+                    btn.setIcon(qta.icon(icon_name, color=color))
+                elif fallback_icon_std:
+                    btn.setIcon(style.standardIcon(fallback_icon_std))
+                else:
+                    btn.setText(fallback_text)
+                    btn.setStyleSheet(f"color: {color}; font-weight: bold; border: none;")
+            
+            btn.clicked.connect(lambda: callback(item))
+            self.tree.setItemWidget(item, col, btn)
+
+        current_type = item.data(COL_TYPE, Qt.ItemDataRole.EditRole) 
+        if not current_type: current_type = item.text(COL_TYPE)
+        
+        is_group = (current_type == "Group")
+        can_run = not is_group and current_type != "PASSWORD"
+
+        # 1. Run (Hidden for Group, Disabled for Password)
+        set_btn(COL_ACT_RUN, 'fa5s.play', '#4CAF50', '▶', QStyle.StandardPixmap.SP_MediaPlay, 
+                "Play", self.run_session_item, enabled=can_run, visible=(not is_group))
+
+        # 2. Duplicate
+        set_btn(COL_ACT_DUP, 'fa5s.copy', '#2196F3', '++', None, 
+                "Duplicate", self.duplicate_item_row)
+
+        # 3. Delete
+        set_btn(COL_ACT_DEL, 'fa5s.times', '#F44336', '✖', QStyle.StandardPixmap.SP_DialogCloseButton, 
+                "Delete", self.delete_item_row)
+
+        # 4. Up
+        set_btn(COL_ACT_UP, 'fa5s.arrow-up', '#607D8B', '▲', QStyle.StandardPixmap.SP_ArrowUp, 
+                "Up", lambda i: self.move_item_row(i, True))
+
+        # 5. Down
+        set_btn(COL_ACT_DOWN, 'fa5s.arrow-down', '#607D8B', '▼', QStyle.StandardPixmap.SP_ArrowDown, 
+                "Down", lambda i: self.move_item_row(i, False))
+
+    # --- ACTIONS ---
+
+    def add_record(self, is_group=False):
+        selected = self.tree.currentItem()
+        parent_item = self.tree.invisibleRootItem()
+        
+        if selected:
+            if is_group:
+                parent_item = self.tree.invisibleRootItem()
+            else:
+                stype = selected.data(COL_TYPE, Qt.ItemDataRole.EditRole) or selected.text(COL_TYPE)
+                if stype == "Group":
+                    parent_item = selected
+                else:
+                    parent_item = selected.parent() or self.tree.invisibleRootItem()
+
+        new_id = str(uuid.uuid4())
+        item_type = "Group" if is_group else "SSH"
+        data = {
+            'type': item_type, 'env': 'PROD', 
+            'c1': '#ffffff', 'c2': '#000000',
+            'desc': f"New {item_type}", 'dest': '', 'port': '', 
+            'login': '', 'password': '', 'app_path': ''
+        }
+        self.sessions_data[new_id] = data
+        
+        item = QTreeWidgetItem(parent_item)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
+        item.setData(0, Qt.ItemDataRole.UserRole, new_id)
+        self.tree.item_map[new_id] = item
+        
+        self.update_item_from_data(item, data)
+        
+        if parent_item != self.tree.invisibleRootItem():
+            parent_item.setExpanded(True)
+        self.tree.setCurrentItem(item)
+
+    def duplicate_item_row(self, item):
+        item_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if not item_id or item_id not in self.sessions_data: return
+
+        parent = item.parent() or self.tree.invisibleRootItem()
+        idx = parent.indexOfChild(item)
+
+        original_data = self.sessions_data[item_id]
+        new_data = original_data.copy()
+        new_data['desc'] += " (Copy)"
+        
+        new_id = str(uuid.uuid4())
+        self.sessions_data[new_id] = new_data
+        
+        new_item = QTreeWidgetItem()
+        new_item.setFlags(item.flags())
+        new_item.setData(0, Qt.ItemDataRole.UserRole, new_id)
+        self.tree.item_map[new_id] = new_item
+        
+        self.update_item_from_data(new_item, new_data)
+        
+        parent.insertChild(idx + 1, new_item)
+        self.setup_row_buttons(new_item)
+        self.save_sessions()
+
+    def update_item_from_data(self, item, data):
+        item.setText(COL_TITLE, data['desc'])
+        item.setText(COL_TYPE, data['type'])
+        item.setData(COL_TYPE, Qt.ItemDataRole.EditRole, data['type'])
+        item.setText(COL_ENV, data['env'])
+        
+        item.setData(COL_C1, Qt.ItemDataRole.UserRole, data['c1'])
+        item.setData(COL_C2, Qt.ItemDataRole.UserRole, data['c2'])
+        
+        item.setText(COL_DEST, data['dest'])
+        item.setText(COL_PORT, data['port'])
+        item.setText(COL_LOGIN, data['login'])
+        item.setText(COL_PASSWORD, data['password'])
+        item.setText(COL_PATH, data['app_path'])
+        
+        self.apply_row_style(item, data['c1'], data['c2'])
+        self.setup_row_buttons(item)
+
+    def run_session_item(self, item):
+        stype = item.data(COL_TYPE, Qt.ItemDataRole.EditRole) or item.text(COL_TYPE)
+        dest = item.text(COL_DEST)
+        port = item.text(COL_PORT)
+        login = item.text(COL_LOGIN)
+        pwd = item.text(COL_PASSWORD)
+        path = item.text(COL_PATH) or PUTTY_PATH
+        
+        try:
+            if stype == "SSH":
+                cmd = [path, "-ssh", f"{login}@{dest}", "-pw", pwd]
+                if port: cmd.extend(["-P", port])
+                print(f"Running: {' '.join(cmd)}")
+                subprocess.Popen(cmd)
+            elif stype == "TELNET":
+                cmd = f'start cmd /k "telnet {dest} {port}"'
+                print(f"Running: {cmd}")
+                os.system(cmd)
+            elif stype == "WEB":
+                print(f"Opening Browser: {dest}")
+                webbrowser.open(dest)
+            elif stype == "APP":
+                print(f"Launching App: {path}")
+                subprocess.Popen([path])
+        except Exception as e:
+            print(f"Error running session: {e}")
+
+    def move_item_row(self, item, up=True):
+        parent = item.parent() or self.tree.invisibleRootItem()
+        idx = parent.indexOfChild(item)
+        new_idx = max(0, idx - 1) if up else min(parent.childCount() - 1, idx + 1)
+        
+        if idx != new_idx:
+            parent.takeChild(idx)
+            parent.insertChild(new_idx, item)
+            self.tree.setCurrentItem(item)
+            self.setup_row_buttons(item)
+            self.save_sessions()
+
+    def delete_item_row(self, item):
+        if QMessageBox.question(self, "Delete", f"Delete '{item.text(COL_TITLE)}'?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+            def clean_data(q_item):
+                iid = q_item.data(0, Qt.ItemDataRole.UserRole)
+                if iid in self.sessions_data: del self.sessions_data[iid]
+                if iid in self.tree.item_map: del self.tree.item_map[iid]
+                for i in range(q_item.childCount()):
+                    clean_data(q_item.child(i))
+
+            clean_data(item)
+            (item.parent() or self.tree.invisibleRootItem()).removeChild(item)
+            self.save_sessions()
+
+    # --- EVENT HANDLERS ---
+
+    def on_item_changed(self, item, column):
+        item_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if not item_id or item_id not in self.sessions_data: return
+
+        new_val = item.text(column)
+        if column == COL_TYPE:
+             item.setData(COL_TYPE, Qt.ItemDataRole.EditRole, new_val)
+
+        data = self.sessions_data[item_id]
+        
+        key_map = {
+            COL_TITLE: 'desc', COL_TYPE: 'type', COL_ENV: 'env',
+            COL_DEST: 'dest', COL_PORT: 'port',
+            COL_LOGIN: 'login', COL_PASSWORD: 'password', COL_PATH: 'app_path'
+        }
+        
+        if column in key_map:
+            data[key_map[column]] = new_val
+
+        if column == COL_TYPE:
+            self.refresh_row_visuals(item)
+            self.setup_row_buttons(item)
+
+    def on_item_double_clicked(self, item, column):
+        is_c1 = column == COL_C1
+        is_c2 = column == COL_C2
+        
+        if is_c1 or is_c2:
+            current_hex = item.data(column, Qt.ItemDataRole.UserRole) or ("#ffffff" if is_c1 else "#000000")
+            c = QColorDialog.getColor(QColor(current_hex), self)
+            
+            if c.isValid():
+                new_hex = c.name()
+                item.setData(column, Qt.ItemDataRole.UserRole, new_hex) 
+                
+                item_id = item.data(0, Qt.ItemDataRole.UserRole)
+                if item_id in self.sessions_data:
+                    key = 'c1' if is_c1 else 'c2'
+                    self.sessions_data[item_id][key] = new_hex
+                
+                c1_val = item.data(COL_C1, Qt.ItemDataRole.UserRole)
+                c2_val = item.data(COL_C2, Qt.ItemDataRole.UserRole)
+                self.apply_row_style(item, c1_val, c2_val)
+
+    def apply_row_style(self, item, c1_hex, c2_hex):
+        bg_brush = QBrush(QColor(c1_hex))
+        fg_brush = QBrush(QColor(c2_hex))
+        
+        for i in range(COL_COUNT):
+            if i >= COL_ACT_RUN: continue # Actions have own paint/widgets
+            item.setBackground(i, bg_brush)
+            item.setForeground(i, fg_brush)
+        
+        self.refresh_row_visuals(item)
+
+    def refresh_row_visuals(self, item):
+        ctype = item.data(COL_TYPE, Qt.ItemDataRole.EditRole) or item.text(COL_TYPE)
+        
+        c1_hex = item.data(COL_C1, Qt.ItemDataRole.UserRole) or "#ffffff"
+        c1_brush = QBrush(QColor(c1_hex))
+        
+        font = item.font(COL_TITLE)
+        if ctype == "Group":
+            font.setBold(True)
+        else:
+            font.setBold(False)
+            
+        for i in range(COL_COUNT): item.setFont(i, font)
+
+        for i in range(COL_COUNT):
+            if i >= COL_ACT_RUN: continue
+            item.setBackground(i, c1_brush)
+
+    # --- PERSISTENCE & CSV ---
+
+    def load_sessions(self):
+        self.tree.blockSignals(True)
+        self.tree.clear()
+        self.sessions_data.clear()
+        self.tree.item_map.clear()
+        
+        try:
+            with open(DATA_FILE, 'r') as f:
+                data_list = json.load(f)
+                
+            def build(item_list, parent):
+                for d in item_list:
+                    iid = d.get('id', str(uuid.uuid4()))
+                    c1 = d.get('c1', d.get('color', '#ffffff'))
+                    c2 = d.get('c2', '#000000')
+                    
+                    self.sessions_data[iid] = {k:v for k,v in d.items() if k not in ('children','id')}
+                    self.sessions_data[iid]['c1'] = c1
+                    self.sessions_data[iid]['c2'] = c2
+
+                    item = QTreeWidgetItem(parent)
+                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
+                    item.setData(0, Qt.ItemDataRole.UserRole, iid)
+                    self.tree.item_map[iid] = item
+                    
+                    self.update_item_from_data(item, self.sessions_data[iid])
+                    
+                    if 'children' in d:
+                        build(d['children'], item)
+
+            build(data_list, self.tree.invisibleRootItem())
+            self.tree.expandAll()
+        except Exception:
+            pass
+        self.tree.blockSignals(False)
+
+    def save_sessions(self):
+        def extract(parent):
+            res = []
+            for i in range(parent.childCount()):
+                child = parent.child(i)
+                iid = child.data(0, Qt.ItemDataRole.UserRole)
+                c1 = child.data(COL_C1, Qt.ItemDataRole.UserRole)
+                c2 = child.data(COL_C2, Qt.ItemDataRole.UserRole)
+                stype = child.data(COL_TYPE, Qt.ItemDataRole.EditRole) or child.text(COL_TYPE)
+
+                node = {
+                    'id': iid,
+                    'desc': child.text(COL_TITLE),
+                    'type': stype,
+                    'env': child.text(COL_ENV),
+                    'c1': c1,
+                    'c2': c2,
+                    'dest': child.text(COL_DEST),
+                    'port': child.text(COL_PORT),
+                    'login': child.text(COL_LOGIN),
+                    'password': child.text(COL_PASSWORD),
+                    'app_path': child.text(COL_PATH),
+                }
+                children = extract(child)
+                if children: node['children'] = children
+                res.append(node)
+            return res
+
+        data = extract(self.tree.invisibleRootItem())
+        with open(DATA_FILE, 'w') as f:
+            json.dump(data, f, indent=4)
+        QMessageBox.information(self, "Save", "Data saved successfully.")
+
+    def export_csv(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Export CSV", "", "CSV Files (*.csv)")
+        if not path: return
+
+        rows = []
+        def traverse(parent, parent_id=""):
+            for i in range(parent.childCount()):
+                item = parent.child(i)
+                iid = item.data(0, Qt.ItemDataRole.UserRole)
+                data = self.sessions_data.get(iid, {})
+                
+                row = {
+                    'id': iid, 'parent_id': parent_id,
+                    'title': item.text(COL_TITLE),
+                    'type': item.data(COL_TYPE, Qt.ItemDataRole.EditRole) or item.text(COL_TYPE),
+                    'env': item.text(COL_ENV),
+                    'c1': item.data(COL_C1, Qt.ItemDataRole.UserRole),
+                    'c2': item.data(COL_C2, Qt.ItemDataRole.UserRole),
+                    'dest': item.text(COL_DEST),
+                    'port': item.text(COL_PORT),
+                    'login': item.text(COL_LOGIN),
+                    'password': item.text(COL_PASSWORD),
+                    'path': item.text(COL_PATH)
+                }
+                rows.append(row)
+                traverse(item, iid)
+
+        traverse(self.tree.invisibleRootItem())
+        
+        try:
+            with open(path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=['id','parent_id','title','type','env','c1','c2','dest','port','login','password','path'])
+                writer.writeheader()
+                writer.writerows(rows)
+            QMessageBox.information(self, "Export", "Export successful.")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", str(e))
+
+    def import_csv(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import CSV", "", "CSV Files (*.csv)")
+        if not path: return
+
+        try:
+            new_items_map = {} 
+            with open(path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row['id'] in self.sessions_data:
+                        continue 
+                    
+                    data = {
+                        'desc': row['title'], 'type': row['type'], 'env': row['env'],
+                        'c1': row['c1'], 'c2': row['c2'],
+                        'dest': row['dest'], 'port': row['port'],
+                        'login': row['login'], 'password': row['password'],
+                        'app_path': row['path']
+                    }
+                    new_items_map[row['id']] = (data, row['parent_id'])
+                    self.sessions_data[row['id']] = data
+
+            created_widgets = {}
+            for iid, (data, _) in new_items_map.items():
+                item = QTreeWidgetItem()
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
+                item.setData(0, Qt.ItemDataRole.UserRole, iid)
+                self.tree.item_map[iid] = item
+                self.update_item_from_data(item, data)
+                created_widgets[iid] = item
+
+            for iid, (_, parent_id) in new_items_map.items():
+                item = created_widgets[iid]
+                parent = None
+                if parent_id in created_widgets:
+                    parent = created_widgets[parent_id]
+                elif parent_id in self.tree.item_map:
+                    parent = self.tree.item_map[parent_id]
+                else:
+                    parent = self.tree.invisibleRootItem()
+                
+                parent.addChild(item)
+                self.setup_row_buttons(item)
+
+            QMessageBox.information(self, "Import", f"Imported {len(new_items_map)} records.")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", str(e))
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = SessionKeeperApp()
+    window.show()
+    sys.exit(app.exec())
