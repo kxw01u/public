@@ -1,4 +1,3 @@
-
 import sys
 import json
 import os
@@ -11,7 +10,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QSplitter,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QHBoxLayout,
     QStyledItemDelegate, QLineEdit, QComboBox, QPushButton, QLabel,
-    QMessageBox, QColorDialog, QAbstractItemView, QStyle, QFrame, 
+    QMessageBox, QColorDialog, QAbstractItemView, QStyle, QFrame,
     QHeaderView, QStyleOptionViewItem, QFileDialog, QStyleOptionHeader
 )
 from PyQt6.QtGui import QColor, QBrush, QPalette, QIcon, QAction, QPainter, QPen, QFont
@@ -24,20 +23,21 @@ from PyQt6.QtCore import (
 HAS_QTA = False
 try:
     import qtawesome as qta
+
     HAS_QTA = True
 except ImportError:
     print("qtawesome not found. Using standard icons/text.")
 
 # --- CONFIGURATION ---
 DATA_FILE = "sessions.json"
-PUTTY_PATH = "C:\\Program Files\\PuTTY\\putty.exe" 
+PUTTY_PATH = "C:\\Program Files\\PuTTY\\putty.exe"
 
 # --- ENUM for Column Indices ---
 COL_TITLE = 0
 COL_TYPE = 1
 COL_ENV = 2
-COL_C1 = 3   # Row Background Color (Swatch)
-COL_C2 = 4   # Row Font Color (Swatch)
+COL_C1 = 3  # Row Background Color (Swatch)
+COL_C2 = 4  # Row Font Color (Swatch)
 COL_DEST = 5
 COL_PORT = 6
 COL_LOGIN = 7
@@ -51,6 +51,7 @@ COL_ACT_UP = 13
 COL_ACT_DOWN = 14
 COL_COUNT = 15
 
+
 # --- Custom Header View for Merged Actions ---
 class MergedHeaderView(QHeaderView):
     def __init__(self, orientation, parent=None):
@@ -60,19 +61,19 @@ class MergedHeaderView(QHeaderView):
         # Identify Action Columns (10-14)
         if COL_ACT_RUN <= logicalIndex <= COL_ACT_DOWN:
             painter.save()
-            
+
             # 1. Draw Standard Background for this section
             opt = QStyleOptionHeader()
             self.initStyleOption(opt)
             opt.rect = rect
             opt.section = logicalIndex
             self.style().drawControl(QStyle.ControlElement.CE_HeaderSection, opt, painter, self)
-            
+
             # 2. Draw Text "Actions" ONLY when painting the middle column (Delete/12)
             # We disable clipping to allow the text to span across neighbor columns
             if logicalIndex == COL_ACT_DEL:
-                painter.setClipping(False) # Allow drawing outside this section's rect
-                
+                painter.setClipping(False)  # Allow drawing outside this section's rect
+
                 # Calculate the span rect (Assuming fixed 30px width for all 5 columns)
                 # We want the text to be centered over the 5 columns.
                 # Current rect is the middle one.
@@ -81,15 +82,16 @@ class MergedHeaderView(QHeaderView):
                 span_rect = QRect(rect)
                 span_rect.setLeft(rect.left() - 2 * col_width)
                 span_rect.setWidth(5 * col_width)
-                
+
                 opt.text = "Actions"
                 opt.rect = span_rect
                 self.style().drawControl(QStyle.ControlElement.CE_HeaderLabel, opt, painter, self)
-            
+
             painter.restore()
         else:
             # Standard painting for other columns
             super().paintSection(painter, rect, logicalIndex)
+
 
 # --- Custom Delegate ---
 class EditDelegate(QStyledItemDelegate):
@@ -100,16 +102,16 @@ class EditDelegate(QStyledItemDelegate):
 
     def createEditor(self, parent, option, index):
         col = index.column()
-        
+
         # Block editing Action / Colors
         if col >= COL_ACT_RUN or col in (COL_C1, COL_C2): return None
 
         type_index = index.siblingAtColumn(COL_TYPE)
-        current_type = type_index.data(Qt.ItemDataRole.EditRole) 
+        current_type = type_index.data(Qt.ItemDataRole.EditRole)
         if not current_type: current_type = type_index.text()
 
         if current_type == "Group" and col not in (COL_TITLE, COL_TYPE, COL_ENV):
-            return None 
+            return None
         if current_type == "PASSWORD" and col == COL_PATH:
             return None
         if current_type == "TELNET" and col == COL_PATH:
@@ -127,7 +129,7 @@ class EditDelegate(QStyledItemDelegate):
             editor = QLineEdit(parent)
             editor.setEchoMode(QLineEdit.EchoMode.Password)
             return editor
-            
+
         return super().createEditor(parent, option, index)
 
     def setEditorData(self, editor, index):
@@ -147,7 +149,7 @@ class EditDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         col = index.column()
         painter.save()
-        
+
         # --- 1. GEOMETRY CALCULATION ---
         bg_rect = QRect(option.rect)
         bg_rect.setHeight(bg_rect.height() - 1)
@@ -155,7 +157,7 @@ class EditDelegate(QStyledItemDelegate):
 
         # --- 2. BACKGROUND PAINTING ---
         bg_brush = index.data(Qt.ItemDataRole.BackgroundRole)
-        
+
         # C1/C2: White pad. Actions: White pad (widgets cover it mostly, but good for gaps).
         if col in (COL_C1, COL_C2) or col >= COL_ACT_RUN:
             painter.fillRect(bg_rect, Qt.GlobalColor.white)
@@ -165,7 +167,7 @@ class EditDelegate(QStyledItemDelegate):
         # Handle Selection Highlight (Border Only)
         if option.state & QStyle.StateFlag.State_Selected:
             pen = QPen(option.palette.highlight().color(), 2)
-            r = bg_rect.adjusted(1,1,-1,-1)
+            r = bg_rect.adjusted(1, 1, -1, -1)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(r)
@@ -180,17 +182,17 @@ class EditDelegate(QStyledItemDelegate):
                 painter.setBrush(QBrush(color))
                 painter.setPen(QPen(Qt.GlobalColor.black, 0.5))
                 painter.drawRect(swatch_rect)
-        
+
         elif col == COL_TYPE:
             text = index.data(Qt.ItemDataRole.DisplayRole)
             if text != "Group":
                 self.draw_default_text(painter, option, index)
-        
-        elif col < COL_ACT_RUN: # Don't draw text for action columns (handled by widgets)
-             self.draw_default_text(painter, option, index)
+
+        elif col < COL_ACT_RUN:  # Don't draw text for action columns (handled by widgets)
+            self.draw_default_text(painter, option, index)
 
         # --- 4. BORDERS (GRID LINES) ---
-        grid_color = QColor("#d0d0d0") 
+        grid_color = QColor("#d0d0d0")
         painter.setPen(QPen(grid_color, 1))
         painter.drawLine(option.rect.bottomLeft(), option.rect.bottomRight())
         painter.drawLine(option.rect.topRight(), option.rect.bottomRight())
@@ -202,6 +204,7 @@ class EditDelegate(QStyledItemDelegate):
         if opt.state & QStyle.StateFlag.State_Selected:
             opt.state &= ~QStyle.StateFlag.State_Selected
         super().paint(painter, opt, index)
+
 
 # --- Custom Tree Widget ---
 class SessionTreeWidget(QTreeWidget):
@@ -216,12 +219,12 @@ class SessionTreeWidget(QTreeWidget):
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.item_map = {}
-        
+
         self.setStyleSheet("QTreeView { border: 1px solid #ccc; gridline-color: #d0d0d0; }")
-        
+
         # Apply Custom Merged Header
         self.setHeader(MergedHeaderView(Qt.Orientation.Horizontal, self))
-        
+
     def mimeData(self, items):
         mime_data = QMimeData()
         if items and items[0].data(0, Qt.ItemDataRole.UserRole) is not None:
@@ -237,12 +240,12 @@ class SessionTreeWidget(QTreeWidget):
         dragged_item = self.item_map.get(item_id)
         if not dragged_item: return False
 
-        dragged_type = dragged_item.data(COL_TYPE, Qt.ItemDataRole.EditRole) 
+        dragged_type = dragged_item.data(COL_TYPE, Qt.ItemDataRole.EditRole)
         if not dragged_type: dragged_type = dragged_item.text(COL_TYPE)
 
-        target_item = parent 
+        target_item = parent
         new_parent = self.invisibleRootItem()
-        new_index = row 
+        new_index = row
 
         if target_item:
             target_type = target_item.data(COL_TYPE, Qt.ItemDataRole.EditRole)
@@ -264,11 +267,11 @@ class SessionTreeWidget(QTreeWidget):
         else:
             new_parent_type = new_parent.data(COL_TYPE, Qt.ItemDataRole.EditRole)
             if not new_parent_type and new_parent != self.invisibleRootItem():
-                 new_parent_type = new_parent.text(COL_TYPE)
-            
+                new_parent_type = new_parent.text(COL_TYPE)
+
             if new_parent != self.invisibleRootItem() and new_parent_type != 'Group':
-                 QMessageBox.warning(self, "Invalid Drop", "Sessions can only be grouped under Group entries.")
-                 return False
+                QMessageBox.warning(self, "Invalid Drop", "Sessions can only be grouped under Group entries.")
+                return False
 
         old_parent = dragged_item.parent() or self.invisibleRootItem()
         old_parent.removeChild(dragged_item)
@@ -277,14 +280,15 @@ class SessionTreeWidget(QTreeWidget):
             new_parent.addChild(dragged_item)
         else:
             new_parent.insertChild(new_index, dragged_item)
-            
+
         self.setCurrentItem(dragged_item)
         self.itemDropped.emit(dragged_item)
-        
+
         if self.window() and hasattr(self.window(), 'save_sessions'):
             self.window().save_sessions()
-            
+
         return True
+
 
 # --- Main Application Window ---
 class SessionKeeperApp(QMainWindow):
@@ -292,7 +296,7 @@ class SessionKeeperApp(QMainWindow):
         super().__init__()
         self.setWindowTitle("Session Keeper V2 (PyQt6)")
         self.setGeometry(100, 100, 1600, 800)
-        self.sessions_data = {} 
+        self.sessions_data = {}
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -303,7 +307,7 @@ class SessionKeeperApp(QMainWindow):
 
     def setup_ui(self):
         toolbar = QHBoxLayout()
-        
+
         btn_add_grp = QPushButton("+ Group")
         btn_add_grp.setFixedSize(100, 30)
         btn_add_grp.setStyleSheet("""
@@ -319,7 +323,7 @@ class SessionKeeperApp(QMainWindow):
             QPushButton:hover { background-color: #1976d2; }
         """)
         btn_add_sess.clicked.connect(lambda: self.add_record(is_group=False))
-        
+
         btn_import = QPushButton("Import")
         btn_import.setFixedSize(80, 30)
         btn_import.setStyleSheet("""
@@ -351,19 +355,19 @@ class SessionKeeperApp(QMainWindow):
         toolbar.addWidget(btn_export)
         toolbar.addStretch()
         toolbar.addWidget(btn_save)
-        
+
         self.main_layout.addLayout(toolbar)
 
         self.tree = SessionTreeWidget(parent=self.central_widget)
         # 5 Separate columns for Actions, with empty labels (Action text handled by MergedHeaderView)
         self.tree.setHeaderLabels([
-            "Title", "Type", "Env", "C1", "C2", 
-            "Destination", "Port", "Login", "Password", "App Path", 
+            "Title", "Type", "Env", "C1", "C2",
+            "Destination", "Port", "Login", "Password", "App Path",
             "", "", "", "", ""
         ])
-        
+
         header = self.tree.header()
-        
+
         self.tree.setColumnWidth(COL_TITLE, 200)
         self.tree.setColumnWidth(COL_TYPE, 80)
         self.tree.setColumnWidth(COL_ENV, 80)
@@ -371,23 +375,23 @@ class SessionKeeperApp(QMainWindow):
         self.tree.setColumnWidth(COL_C2, 40)
         self.tree.setColumnWidth(COL_DEST, 140)
         self.tree.setColumnWidth(COL_PORT, 60)
-        
+
         # 5 small fixed columns for actions
         action_col_width = 30
         for col in range(COL_ACT_RUN, COL_ACT_DOWN + 1):
             self.tree.setColumnWidth(col, action_col_width)
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
-        
-        header.setSectionResizeMode(COL_TITLE, QHeaderView.ResizeMode.Stretch)
-        
+
+        header.setSectionResizeMode(COL_TITLE, QHeaderView.ResizeMode.Interactive)
+
         self.delegate = EditDelegate(self.tree)
         self.tree.setItemDelegate(self.delegate)
-        
+
         self.tree.itemChanged.connect(self.on_item_changed)
         self.tree.itemDoubleClicked.connect(self.on_item_double_clicked)
         self.tree.itemDropped.connect(self.setup_row_buttons)
         self.tree.itemClicked.connect(self.on_item_single_clicked)
-        
+
         self.main_layout.addWidget(self.tree)
 
     def on_item_single_clicked(self, item, column):
@@ -397,19 +401,20 @@ class SessionKeeperApp(QMainWindow):
     def setup_row_buttons(self, item):
         """Creates individual buttons for each of the 5 action columns."""
         style = self.style()
-        
+
         # Helper to create and set button
-        def set_btn(col, icon_name, color, fallback_text, fallback_icon_std, tooltip, callback, enabled=True, visible=True):
+        def set_btn(col, icon_name, color, fallback_text, fallback_icon_std, tooltip, callback, enabled=True,
+                    visible=True):
             btn = QPushButton()
             btn.setFixedSize(24, 24)
             btn.setToolTip(tooltip)
             btn.setFlat(True)
-            
+
             if not visible:
                 btn.setVisible(False)
             elif not enabled:
                 btn.setEnabled(False)
-            
+
             if visible:
                 if HAS_QTA:
                     btn.setIcon(qta.icon(icon_name, color=color))
@@ -418,34 +423,34 @@ class SessionKeeperApp(QMainWindow):
                 else:
                     btn.setText(fallback_text)
                     btn.setStyleSheet(f"color: {color}; font-weight: bold; border: none;")
-            
+
             btn.clicked.connect(lambda: callback(item))
             self.tree.setItemWidget(item, col, btn)
 
-        current_type = item.data(COL_TYPE, Qt.ItemDataRole.EditRole) 
+        current_type = item.data(COL_TYPE, Qt.ItemDataRole.EditRole)
         if not current_type: current_type = item.text(COL_TYPE)
-        
+
         is_group = (current_type == "Group")
         can_run = not is_group and current_type != "PASSWORD"
 
         # 1. Run (Hidden for Group, Disabled for Password)
-        set_btn(COL_ACT_RUN, 'fa5s.play', '#4CAF50', '▶', QStyle.StandardPixmap.SP_MediaPlay, 
+        set_btn(COL_ACT_RUN, 'fa5s.play', '#4CAF50', '▶', QStyle.StandardPixmap.SP_MediaPlay,
                 "Play", self.run_session_item, enabled=can_run, visible=(not is_group))
 
         # 2. Duplicate
-        set_btn(COL_ACT_DUP, 'fa5s.copy', '#2196F3', '++', None, 
+        set_btn(COL_ACT_DUP, 'fa5s.copy', '#2196F3', '++', None,
                 "Duplicate", self.duplicate_item_row)
 
         # 3. Delete
-        set_btn(COL_ACT_DEL, 'fa5s.times', '#F44336', '✖', QStyle.StandardPixmap.SP_DialogCloseButton, 
+        set_btn(COL_ACT_DEL, 'fa5s.times', '#F44336', '✖', QStyle.StandardPixmap.SP_DialogCloseButton,
                 "Delete", self.delete_item_row)
 
         # 4. Up
-        set_btn(COL_ACT_UP, 'fa5s.arrow-up', '#607D8B', '▲', QStyle.StandardPixmap.SP_ArrowUp, 
+        set_btn(COL_ACT_UP, 'fa5s.arrow-up', '#607D8B', '▲', QStyle.StandardPixmap.SP_ArrowUp,
                 "Up", lambda i: self.move_item_row(i, True))
 
         # 5. Down
-        set_btn(COL_ACT_DOWN, 'fa5s.arrow-down', '#607D8B', '▼', QStyle.StandardPixmap.SP_ArrowDown, 
+        set_btn(COL_ACT_DOWN, 'fa5s.arrow-down', '#607D8B', '▼', QStyle.StandardPixmap.SP_ArrowDown,
                 "Down", lambda i: self.move_item_row(i, False))
 
     # --- ACTIONS ---
@@ -453,7 +458,7 @@ class SessionKeeperApp(QMainWindow):
     def add_record(self, is_group=False):
         selected = self.tree.currentItem()
         parent_item = self.tree.invisibleRootItem()
-        
+
         if selected:
             if is_group:
                 parent_item = self.tree.invisibleRootItem()
@@ -467,20 +472,21 @@ class SessionKeeperApp(QMainWindow):
         new_id = str(uuid.uuid4())
         item_type = "Group" if is_group else "SSH"
         data = {
-            'type': item_type, 'env': 'PROD', 
+            'type': item_type, 'env': 'PROD',
             'c1': '#ffffff', 'c2': '#000000',
-            'desc': f"New {item_type}", 'dest': '', 'port': '', 
+            'desc': f"New {item_type}", 'dest': '', 'port': '',
             'login': '', 'password': '', 'app_path': ''
         }
         self.sessions_data[new_id] = data
-        
+
         item = QTreeWidgetItem(parent_item)
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
+        item.setFlags(
+            item.flags() | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
         item.setData(0, Qt.ItemDataRole.UserRole, new_id)
         self.tree.item_map[new_id] = item
-        
+
         self.update_item_from_data(item, data)
-        
+
         if parent_item != self.tree.invisibleRootItem():
             parent_item.setExpanded(True)
         self.tree.setCurrentItem(item)
@@ -495,17 +501,17 @@ class SessionKeeperApp(QMainWindow):
         original_data = self.sessions_data[item_id]
         new_data = original_data.copy()
         new_data['desc'] += " (Copy)"
-        
+
         new_id = str(uuid.uuid4())
         self.sessions_data[new_id] = new_data
-        
+
         new_item = QTreeWidgetItem()
         new_item.setFlags(item.flags())
         new_item.setData(0, Qt.ItemDataRole.UserRole, new_id)
         self.tree.item_map[new_id] = new_item
-        
+
         self.update_item_from_data(new_item, new_data)
-        
+
         parent.insertChild(idx + 1, new_item)
         self.setup_row_buttons(new_item)
         self.save_sessions()
@@ -515,16 +521,16 @@ class SessionKeeperApp(QMainWindow):
         item.setText(COL_TYPE, data['type'])
         item.setData(COL_TYPE, Qt.ItemDataRole.EditRole, data['type'])
         item.setText(COL_ENV, data['env'])
-        
+
         item.setData(COL_C1, Qt.ItemDataRole.UserRole, data['c1'])
         item.setData(COL_C2, Qt.ItemDataRole.UserRole, data['c2'])
-        
+
         item.setText(COL_DEST, data['dest'])
         item.setText(COL_PORT, data['port'])
         item.setText(COL_LOGIN, data['login'])
         item.setText(COL_PASSWORD, data['password'])
         item.setText(COL_PATH, data['app_path'])
-        
+
         self.apply_row_style(item, data['c1'], data['c2'])
         self.setup_row_buttons(item)
 
@@ -535,7 +541,7 @@ class SessionKeeperApp(QMainWindow):
         login = item.text(COL_LOGIN)
         pwd = item.text(COL_PASSWORD)
         path = item.text(COL_PATH) or PUTTY_PATH
-        
+
         try:
             if stype == "SSH":
                 cmd = [path, "-ssh", f"{login}@{dest}", "-pw", pwd]
@@ -559,7 +565,7 @@ class SessionKeeperApp(QMainWindow):
         parent = item.parent() or self.tree.invisibleRootItem()
         idx = parent.indexOfChild(item)
         new_idx = max(0, idx - 1) if up else min(parent.childCount() - 1, idx + 1)
-        
+
         if idx != new_idx:
             parent.takeChild(idx)
             parent.insertChild(new_idx, item)
@@ -568,7 +574,8 @@ class SessionKeeperApp(QMainWindow):
             self.save_sessions()
 
     def delete_item_row(self, item):
-        if QMessageBox.question(self, "Delete", f"Delete '{item.text(COL_TITLE)}'?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(self, "Delete", f"Delete '{item.text(COL_TITLE)}'?",
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
             def clean_data(q_item):
                 iid = q_item.data(0, Qt.ItemDataRole.UserRole)
                 if iid in self.sessions_data: del self.sessions_data[iid]
@@ -588,16 +595,16 @@ class SessionKeeperApp(QMainWindow):
 
         new_val = item.text(column)
         if column == COL_TYPE:
-             item.setData(COL_TYPE, Qt.ItemDataRole.EditRole, new_val)
+            item.setData(COL_TYPE, Qt.ItemDataRole.EditRole, new_val)
 
         data = self.sessions_data[item_id]
-        
+
         key_map = {
             COL_TITLE: 'desc', COL_TYPE: 'type', COL_ENV: 'env',
             COL_DEST: 'dest', COL_PORT: 'port',
             COL_LOGIN: 'login', COL_PASSWORD: 'password', COL_PATH: 'app_path'
         }
-        
+
         if column in key_map:
             data[key_map[column]] = new_val
 
@@ -608,20 +615,20 @@ class SessionKeeperApp(QMainWindow):
     def on_item_double_clicked(self, item, column):
         is_c1 = column == COL_C1
         is_c2 = column == COL_C2
-        
+
         if is_c1 or is_c2:
             current_hex = item.data(column, Qt.ItemDataRole.UserRole) or ("#ffffff" if is_c1 else "#000000")
             c = QColorDialog.getColor(QColor(current_hex), self)
-            
+
             if c.isValid():
                 new_hex = c.name()
-                item.setData(column, Qt.ItemDataRole.UserRole, new_hex) 
-                
+                item.setData(column, Qt.ItemDataRole.UserRole, new_hex)
+
                 item_id = item.data(0, Qt.ItemDataRole.UserRole)
                 if item_id in self.sessions_data:
                     key = 'c1' if is_c1 else 'c2'
                     self.sessions_data[item_id][key] = new_hex
-                
+
                 c1_val = item.data(COL_C1, Qt.ItemDataRole.UserRole)
                 c2_val = item.data(COL_C2, Qt.ItemDataRole.UserRole)
                 self.apply_row_style(item, c1_val, c2_val)
@@ -629,26 +636,26 @@ class SessionKeeperApp(QMainWindow):
     def apply_row_style(self, item, c1_hex, c2_hex):
         bg_brush = QBrush(QColor(c1_hex))
         fg_brush = QBrush(QColor(c2_hex))
-        
+
         for i in range(COL_COUNT):
-            if i >= COL_ACT_RUN: continue # Actions have own paint/widgets
+            if i >= COL_ACT_RUN: continue  # Actions have own paint/widgets
             item.setBackground(i, bg_brush)
             item.setForeground(i, fg_brush)
-        
+
         self.refresh_row_visuals(item)
 
     def refresh_row_visuals(self, item):
         ctype = item.data(COL_TYPE, Qt.ItemDataRole.EditRole) or item.text(COL_TYPE)
-        
+
         c1_hex = item.data(COL_C1, Qt.ItemDataRole.UserRole) or "#ffffff"
         c1_brush = QBrush(QColor(c1_hex))
-        
+
         font = item.font(COL_TITLE)
         if ctype == "Group":
             font.setBold(True)
         else:
             font.setBold(False)
-            
+
         for i in range(COL_COUNT): item.setFont(i, font)
 
         for i in range(COL_COUNT):
@@ -662,28 +669,29 @@ class SessionKeeperApp(QMainWindow):
         self.tree.clear()
         self.sessions_data.clear()
         self.tree.item_map.clear()
-        
+
         try:
             with open(DATA_FILE, 'r') as f:
                 data_list = json.load(f)
-                
+
             def build(item_list, parent):
                 for d in item_list:
                     iid = d.get('id', str(uuid.uuid4()))
                     c1 = d.get('c1', d.get('color', '#ffffff'))
                     c2 = d.get('c2', '#000000')
-                    
-                    self.sessions_data[iid] = {k:v for k,v in d.items() if k not in ('children','id')}
+
+                    self.sessions_data[iid] = {k: v for k, v in d.items() if k not in ('children', 'id')}
                     self.sessions_data[iid]['c1'] = c1
                     self.sessions_data[iid]['c2'] = c2
 
                     item = QTreeWidgetItem(parent)
-                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
+                    item.setFlags(
+                        item.flags() | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
                     item.setData(0, Qt.ItemDataRole.UserRole, iid)
                     self.tree.item_map[iid] = item
-                    
+
                     self.update_item_from_data(item, self.sessions_data[iid])
-                    
+
                     if 'children' in d:
                         build(d['children'], item)
 
@@ -731,12 +739,13 @@ class SessionKeeperApp(QMainWindow):
         if not path: return
 
         rows = []
+
         def traverse(parent, parent_id=""):
             for i in range(parent.childCount()):
                 item = parent.child(i)
                 iid = item.data(0, Qt.ItemDataRole.UserRole)
                 data = self.sessions_data.get(iid, {})
-                
+
                 row = {
                     'id': iid, 'parent_id': parent_id,
                     'title': item.text(COL_TITLE),
@@ -754,10 +763,11 @@ class SessionKeeperApp(QMainWindow):
                 traverse(item, iid)
 
         traverse(self.tree.invisibleRootItem())
-        
+
         try:
             with open(path, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=['id','parent_id','title','type','env','c1','c2','dest','port','login','password','path'])
+                writer = csv.DictWriter(f, fieldnames=['id', 'parent_id', 'title', 'type', 'env', 'c1', 'c2', 'dest',
+                                                       'port', 'login', 'password', 'path'])
                 writer.writeheader()
                 writer.writerows(rows)
             QMessageBox.information(self, "Export", "Export successful.")
@@ -769,13 +779,13 @@ class SessionKeeperApp(QMainWindow):
         if not path: return
 
         try:
-            new_items_map = {} 
+            new_items_map = {}
             with open(path, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     if row['id'] in self.sessions_data:
-                        continue 
-                    
+                        continue
+
                     data = {
                         'desc': row['title'], 'type': row['type'], 'env': row['env'],
                         'c1': row['c1'], 'c2': row['c2'],
@@ -789,7 +799,8 @@ class SessionKeeperApp(QMainWindow):
             created_widgets = {}
             for iid, (data, _) in new_items_map.items():
                 item = QTreeWidgetItem()
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
+                item.setFlags(
+                    item.flags() | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled)
                 item.setData(0, Qt.ItemDataRole.UserRole, iid)
                 self.tree.item_map[iid] = item
                 self.update_item_from_data(item, data)
@@ -804,14 +815,15 @@ class SessionKeeperApp(QMainWindow):
                     parent = self.tree.item_map[parent_id]
                 else:
                     parent = self.tree.invisibleRootItem()
-                
+
                 parent.addChild(item)
                 self.setup_row_buttons(item)
 
             QMessageBox.information(self, "Import", f"Imported {len(new_items_map)} records.")
-            
+
         except Exception as e:
             QMessageBox.critical(self, "Import Error", str(e))
+
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
