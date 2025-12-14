@@ -94,6 +94,12 @@
             border: none;
             border-radius: 50%;
         }
+        .widget-drag-handle {
+            cursor: grab;
+        }
+        .widget-drag-handle:active {
+            cursor: grabbing;
+        }
     </style>
 </head>
 <body class="bg-gray-50">
@@ -123,7 +129,7 @@
             Activity,
             PieChart,
             ArrowRight,
-            ArrowLeft, // Imported for "left arrow" request
+            ArrowLeft,
             CornerDownRight,
             Circle,
             Download,
@@ -139,12 +145,11 @@
             Minimize2,
             Save,
             Settings,
-            Box, Flag, Star, Target, Zap, Globe, Cpu, Gift, Rocket, Award // New Icons
+            Box, Flag, Star, Target, Zap, Globe, Cpu, Gift, Rocket, Award, Move
         } from 'https://esm.sh/lucide-react@0.263.1';
 
         // --- Utility Functions ---
 
-        // 1. UUID Generator
         const generateId = () => {
             return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
                 var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
@@ -251,7 +256,6 @@
         return nextLevel <= currentLevel;
         };
 
-        // Hex to RGBA helper - UPDATED: Added safety check for undefined hex
         const hexToRgba = (hex, alpha) => {
             if (!hex) return `rgba(0,0,0,${alpha})`;
 
@@ -268,12 +272,10 @@
             return `rgba(${r},${g},${b},${alpha})`;
         };
 
-        // Contrast helper
         const getContrastColor = (hex) => {
             if (!hex) return '#000000';
-            // Normalize hex
             const color = (hex.charAt(0) === '#') ? hex.substring(1, 7) : hex;
-            if (color.length !== 6) return '#000000'; // Fallback
+            if (color.length !== 6) return '#000000'; 
 
             const r = parseInt(color.substring(0, 2), 16);
             const g = parseInt(color.substring(2, 4), 16);
@@ -282,9 +284,16 @@
             return (yiq >= 128) ? '#000000' : '#ffffff';
         };
 
+        const getWeekNumber = (date) => {
+            const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+            const dayNum = d.getUTCDay() || 7;
+            d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+            const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1));
+            return Math.ceil((((d - yearStart) / 86400000) + 1)/7);
+        };
+
         // --- Constants ---
 
-        // ICON SET
         const ICONS = {
             'FolderKanban': FolderKanban,
             'Briefcase': Briefcase,
@@ -298,59 +307,11 @@
             'Flag': Flag
         };
 
-        // UNIFIED COLOR PALETTE (Legacy support + Default for new)
-        const COLOR_PALETTE = [
-            { id: 'white',  bg: 'bg-white',      border: 'border-gray-200',   line: 'bg-gray-400', text: 'text-gray-700', fill: 'bg-gray-400' },
-            { id: 'gray',   bg: 'bg-gray-100',   border: 'border-gray-300',   line: 'bg-gray-600', text: 'text-gray-700', fill: 'bg-gray-500' },
-            { id: 'red',    bg: 'bg-red-100',    border: 'border-red-200',    line: 'bg-red-600',  text: 'text-red-700',  fill: 'bg-red-500' },
-            { id: 'orange', bg: 'bg-orange-100', border: 'border-orange-200', line: 'bg-orange-600', text: 'text-orange-800', fill: 'bg-orange-600' },
-            { id: 'amber',  bg: 'bg-amber-100',  border: 'border-amber-200',  line: 'bg-amber-600', text: 'text-amber-800', fill: 'bg-amber-500' },
-            { id: 'yellow', bg: 'bg-yellow-100', border: 'border-yellow-200', line: 'bg-yellow-500', text: 'text-yellow-800', fill: 'bg-yellow-500' },
-            { id: 'green',  bg: 'bg-green-100',  border: 'border-green-200',  line: 'bg-green-600', text: 'text-green-700', fill: 'bg-green-500' },
-            { id: 'emerald',bg: 'bg-emerald-100',border: 'border-emerald-200',line: 'bg-emerald-600', text: 'text-emerald-700', fill: 'bg-emerald-500' },
-            { id: 'teal',   bg: 'bg-teal-100',   border: 'border-teal-200',   line: 'bg-teal-600',  text: 'text-teal-700',  fill: 'bg-teal-500' },
-            { id: 'cyan',   bg: 'bg-cyan-100',   border: 'border-cyan-200',   line: 'bg-cyan-600',  text: 'text-cyan-700',  fill: 'bg-cyan-500' },
-            { id: 'blue',   bg: 'bg-blue-100',   border: 'border-blue-200',   line: 'bg-blue-600',  text: 'text-blue-700',  fill: 'bg-blue-500' },
-            { id: 'indigo', bg: 'bg-indigo-100', border: 'border-indigo-200', line: 'bg-indigo-600', text: 'text-indigo-700', fill: 'bg-indigo-500' },
-            { id: 'violet', bg: 'bg-violet-100', border: 'border-violet-200', line: 'bg-violet-600', text: 'text-violet-700', fill: 'bg-violet-500' },
-            { id: 'purple', bg: 'bg-purple-100', border: 'border-purple-200', line: 'bg-purple-600', text: 'text-purple-700', fill: 'bg-purple-500' },
-            { id: 'fuchsia',bg: 'bg-fuchsia-100',border: 'border-fuchsia-200',line: 'bg-fuchsia-600', text: 'text-fuchsia-700', fill: 'bg-fuchsia-500' },
-            { id: 'pink',   bg: 'bg-pink-100',   border: 'border-pink-200',   line: 'bg-pink-600',  text: 'text-pink-700',  fill: 'bg-pink-500' },
-            { id: 'rose',   bg: 'bg-rose-100',   border: 'border-rose-200',   line: 'bg-rose-600',  text: 'text-rose-700',  fill: 'bg-rose-500' }
-        ];
-
-        // Legacy mapping for migration
-        const LEGACY_COLOR_MAP = {
-            red: '#ef4444',
-            orange: '#f97316',
-            amber: '#f59e0b',
-            yellow: '#eab308',
-            lime: '#84cc16',
-            green: '#22c55e',
-            emerald: '#10b981',
-            teal: '#14b8a6',
-            cyan: '#06b6d4',
-            sky: '#0ea5e9',
-            blue: '#3b82f6',
-            indigo: '#6366f1',
-            violet: '#8b5cf6',
-            purple: '#a855f7',
-            fuchsia: '#d946ef',
-            pink: '#ec4899',
-            rose: '#f43f5e',
-            slate: '#64748b',
-            gray: '#6b7280',
-            zinc: '#71717a',
-            neutral: '#737373',
-            stone: '#78716c',
-        };
-
-        // Default Configs - UPDATED to include HEX codes
         const DEFAULT_PRIORITY_CONFIG = {
-            '1': { label: 'Urgent', color: '#ef4444' },
-            '2': { label: 'High', color: '#8b5cf6' },
-            '3': { label: 'Normal', color: '#3b82f6' },
-            '4': { label: 'Low', color: '#10b981' },
+            '1': { label: '1 - Urgent', color: '#ef4444' },
+            '2': { label: '2 - High', color: '#8b5cf6' },
+            '3': { label: '3 - Important', color: '#3b82f6' },
+            '4': { label: '4 - Normal', color: '#10b981' },
         };
 
         const DEFAULT_WEIGHT_CONFIG = {
@@ -360,37 +321,30 @@
         };
 
         const DEFAULT_PALETTE = [
-            '#ef4444', // Red
-            '#f97316', // Orange
-            '#f59e0b', // Amber
-            '#84cc16', // Lime
-            '#10b981', // Emerald
-            '#06b6d4', // Cyan
-            '#3b82f6', // Blue
-            '#8b5cf6', // Violet
-            '#d946ef', // Fuchsia
-            '#64748b'  // Slate
+            '#ef4444', '#f97316', '#f59e0b', '#84cc16', '#10b981', '#06b6d4', '#3b82f6', '#8b5cf6', '#d946ef', '#64748b'
         ];
 
-        // Helper to generate dynamic styles from hex color
+        const LEGACY_COLOR_MAP = {
+            red: '#ef4444', orange: '#f97316', amber: '#f59e0b', yellow: '#eab308', lime: '#84cc16', green: '#22c55e', emerald: '#10b981', teal: '#14b8a6', cyan: '#06b6d4', sky: '#0ea5e9', blue: '#3b82f6', indigo: '#6366f1', violet: '#8b5cf6', purple: '#a855f7', fuchsia: '#d946ef', pink: '#ec4899', rose: '#f43f5e', slate: '#64748b', gray: '#6b7280', zinc: '#71717a', neutral: '#737373', stone: '#78716c',
+        };
+
         const generateDynamicStyles = (config) => {
             const styles = {};
             Object.keys(config).forEach(key => {
                 const item = config[key];
-                // Fallback to black if color is missing to prevent crashes
                 const hex = item.color || '#000000';
                 const contrastText = getContrastColor(hex);
 
                 styles[key] = {
                     ...item,
                     styleObj: {
-                        backgroundColor: hex, // Solid exact color
-                        color: contrastText,  // Dynamic contrast text
-                        borderColor: hex,     // Exact border
+                        backgroundColor: hex,
+                        color: contrastText,
+                        borderColor: hex,
                         borderWidth: '1px'
                     },
-                    dotStyle: { backgroundColor: contrastText }, // Dot matches text
-                    solidStyle: { backgroundColor: hex } // For headers/counters
+                    dotStyle: { backgroundColor: contrastText },
+                    solidStyle: { backgroundColor: hex }
                 };
             });
             return styles;
@@ -493,7 +447,170 @@
             );
         };
 
-        const SettingsView = ({ settings, onUpdateSettings }) => {
+        const TimeChart = ({ tasks, settings }) => {
+            const weightStyles = useMemo(() => generateDynamicStyles(settings.weightConfig), [settings.weightConfig]);
+            
+            // 1. Filter WIP Tasks
+            const wipTasks = tasks.filter(t => t.status === 'wip');
+            
+            if (wipTasks.length === 0) {
+                return <div className="text-center py-10 text-gray-400 italic">No ongoing tasks to display in timeline.</div>;
+            }
+
+            // 2. Determine Date Range (Last 2 weeks to Next 2 weeks)
+            const today = new Date();
+            today.setHours(0,0,0,0);
+            
+            const startDate = new Date(today);
+            startDate.setDate(today.getDate() - 14);
+            const dayOfWeek = startDate.getDay(); // 0 is Sun
+            const diffToMon = (dayOfWeek + 6) % 7; 
+            startDate.setDate(startDate.getDate() - diffToMon); // Move to Monday
+            startDate.setHours(0,0,0,0);
+
+            const endDate = new Date(today);
+            endDate.setDate(today.getDate() + 21);
+            const endDayOfWeek = endDate.getDay();
+            const diffToSun = (7 - endDayOfWeek) % 7;
+            endDate.setDate(endDate.getDate() + diffToSun);
+            endDate.setHours(23,59,59,999);
+
+            const totalDuration = endDate - startDate;
+
+            const getPercent = (date) => {
+                const d = new Date(date);
+                if (d < startDate) return 0;
+                if (d > endDate) return 100;
+                return ((d - startDate) / totalDuration) * 100;
+            };
+
+            // 4. Group by Assignee and Resolve Overlaps
+            const assignees = [...new Set(wipTasks.map(t => t.assignee || 'Unassigned'))].sort();
+            
+            const assigneeRows = assignees.map(assignee => {
+                const userTasks = wipTasks.filter(t => (t.assignee || 'Unassigned') === assignee);
+                userTasks.sort((a, b) => new Date(a.start) - new Date(b.start));
+
+                const rows = [];
+                const positionedTasks = userTasks.map(t => {
+                    const taskStart = t.start ? new Date(t.start) : new Date();
+                    // If no target date, extend to end of chart
+                    const taskEnd = t.targetDate ? new Date(t.targetDate) : new Date(endDate);
+                    if (taskEnd <= taskStart) taskEnd.setDate(taskStart.getDate() + 1);
+
+                    let rowIndex = 0;
+                    while (true) {
+                        const row = rows[rowIndex] || [];
+                        const hasOverlap = row.some(existing => {
+                            return (taskStart < existing.end) && (taskEnd > existing.start);
+                        });
+                        
+                        if (!hasOverlap) {
+                            if (!rows[rowIndex]) rows[rowIndex] = [];
+                            rows[rowIndex].push({ start: taskStart, end: taskEnd });
+                            break;
+                        }
+                        rowIndex++;
+                    }
+
+                    return { ...t, rowIndex, calculatedEnd: taskEnd };
+                });
+
+                return {
+                    name: assignee,
+                    tasks: positionedTasks,
+                    rowCount: rows.length || 1
+                };
+            });
+
+            // 5. Generate Header Weeks
+            const weeks = [];
+            let curr = new Date(startDate);
+            while (curr < endDate) {
+                weeks.push({
+                    label: `WK${getWeekNumber(curr)}`,
+                    left: getPercent(curr),
+                    width: (7 * 24 * 60 * 60 * 1000 / totalDuration) * 100
+                });
+                curr.setDate(curr.getDate() + 7);
+            }
+
+            const todayPercent = getPercent(today);
+
+            return (
+                <div className="overflow-x-auto">
+                    <div className="min-w-[800px] relative pb-6 select-none">
+                        {/* Header Weeks */}
+                        <div className="h-8 border-b border-gray-200 relative mb-2 flex">
+                            <div className="w-24 shrink-0"></div>
+                            <div className="flex-1 relative h-full">
+                                {weeks.map((w, i) => (
+                                    <div key={i} className="absolute h-full border-l border-gray-200 text-[10px] font-bold text-gray-500 pl-1" style={{left: `${w.left}%`, width: `${w.width}%`}}>
+                                        {w.label}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* Today Line */}
+                        {todayPercent > 0 && todayPercent < 100 && (
+                            <div className="absolute top-8 bottom-0 w-0.5 bg-red-500 z-20 pointer-events-none" style={{left: `calc(96px + (100% - 96px) * ${todayPercent/100})`}}>
+                                <div className="absolute -top-1 -left-1 w-2.5 h-2.5 rounded-full bg-red-600 shadow-sm"></div>
+                            </div>
+                        )}
+
+                        {/* Rows */}
+                        <div className="space-y-1">
+                            {assigneeRows.map(row => (
+                                <div key={row.name} className="flex border-b border-gray-100 last:border-0 pb-2 pt-2 group hover:bg-gray-50">
+                                    <div className="w-24 shrink-0 text-xs font-bold text-gray-700 truncate pr-3 text-right pt-1" title={row.name}>{row.name}</div>
+                                    <div className="flex-1 relative" style={{ height: `${Math.max(row.rowCount * 28, 28)}px` }}>
+                                        {/* Background Grid */}
+                                        <div className="absolute inset-0 w-full h-full">
+                                            {weeks.map((w, i) => (
+                                                <div key={i} className="absolute top-0 bottom-0 border-l border-gray-200" style={{left: `${w.left}%`}}></div>
+                                            ))}
+                                        </div>
+
+                                        {/* Tasks */}
+                                        {row.tasks.map(t => {
+                                            const left = getPercent(t.start);
+                                            let width = ((t.calculatedEnd - (t.start ? new Date(t.start) : startDate)) / totalDuration) * 100;
+                                            
+                                            if (left + width > 100) width = 100 - left;
+                                            
+                                            const isExtended = !t.targetDate;
+                                            const wStyle = weightStyles[t.weight || 'light'] || weightStyles['light'];
+
+                                            return (
+                                                <div 
+                                                    key={t.id}
+                                                    className={`absolute h-6 rounded-md shadow-sm border border-black/10 flex items-center px-2 hover:ring-2 ring-blue-400 hover:z-10 transition-all cursor-pointer ${isExtended ? 'rounded-r-none border-r-2 border-r-gray-400/50 border-dashed' : ''}`}
+                                                    style={{
+                                                        left: `${left}%`,
+                                                        width: `${Math.max(width, 0.5)}%`,
+                                                        top: `${t.rowIndex * 28}px`,
+                                                        backgroundColor: wStyle.styleObj.backgroundColor,
+                                                        color: wStyle.styleObj.color
+                                                    }}
+                                                    title={`${t.name} (Start: ${formatDate(t.start)} - Target: ${t.targetDate ? formatDate(t.targetDate) : 'None'})`}
+                                                >
+                                                    <span className="text-[10px] font-medium truncate w-full leading-tight">
+                                                        [{t.type || 'Task'}] {t.name}
+                                                    </span>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const SettingsView = ({ settings, onUpdateSettings, onSaveConfig }) => {
             const handlePaletteChange = (index, newColor) => {
                 const newPalette = [...settings.palette];
                 newPalette[index] = newColor;
@@ -509,14 +626,22 @@
             return (
                 <div className="p-8 max-w-4xl mx-auto space-y-6 animate-in fade-in duration-500">
                     <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                        <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center gap-2">
-                            <Activity size={20} className="text-blue-500"/> Display Settings
-                        </h3>
+                        <div className="flex justify-between items-center mb-6">
+                            <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                                <Activity size={20} className="text-blue-500"/> Display Settings
+                            </h3>
+                            <button
+                                onClick={onSaveConfig}
+                                className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition-all shadow-md"
+                                title="Save current settings and data to kanban.json"
+                            >
+                                <Save size={16} /> Save Setting
+                            </button>
+                        </div>
 
                         <div className="space-y-8">
                             {/* Theme & Palette */}
                             <div className="flex flex-col gap-4 pb-6 border-b border-gray-100">
-                                {/* ... existing theme settings ... */}
                                 <div className="flex justify-between items-center">
                                     <div className="font-semibold text-gray-700">Dark Theme</div>
                                     <button
@@ -528,7 +653,7 @@
                                 </div>
 
                                 <div>
-                                    <div className="font-semibold text-gray-700 mb-2">Color Palette (Projects & Lines)</div>
+                                    <div className="font-semibold text-gray-700 mb-2">Color Palette</div>
                                     <div className="text-xs text-gray-500 mb-3">Customize the 10 colors used for Projects and Tasks. Click to change.</div>
                                     <div className="flex flex-row gap-4 items-center overflow-x-auto pb-2">
                                         {settings.palette.map((color, index) => (
@@ -578,28 +703,29 @@
 
                             {/* Priority Config */}
                             <div className="pb-6 border-b border-gray-100">
-                                <div className="font-semibold text-gray-700 mb-3">Priority Colors</div>
-                                {/* ... existing priority config ... */}
-                                <div className="flex flex-row gap-6 items-center flex-wrap">
-                                    {Object.entries(settings.priorityConfig).map(([key, config]) => (
-                                        <div key={key} className="flex items-center gap-2 bg-gray-50 p-2 rounded-lg border border-gray-200">
-                                            <input
-                                                type="color"
-                                                value={config.color || '#000000'}
-                                                onChange={(e) => handleConfigColorChange('priorityConfig', key, e.target.value)}
-                                                className="w-6 h-6 rounded-full cursor-pointer border-none bg-transparent p-0"
-                                                title={`Change ${config.label} color`}
-                                            />
-                                            <span className="text-sm font-medium text-gray-700">{config.label}</span>
-                                        </div>
-                                    ))}
+                                <div className="flex flex-wrap items-center gap-4">
+                                    <div className="font-semibold text-gray-700 min-w-[100px]">Priority Colors</div>
+                                    <div className="flex flex-row gap-6 items-center flex-wrap">
+                                        {Object.entries(settings.priorityConfig).map(([key, config]) => (
+                                            <div key={key} className="flex items-center gap-2 bg-gray-50 p-2 rounded-lg border border-gray-200">
+                                                <input
+                                                    type="color"
+                                                    value={config.color || '#000000'}
+                                                    onChange={(e) => handleConfigColorChange('priorityConfig', key, e.target.value)}
+                                                    className="w-6 h-6 rounded-full cursor-pointer border-none bg-transparent p-0"
+                                                    title={`Change ${config.label} color`}
+                                                />
+                                                <span className="text-sm font-medium text-gray-700">{config.label}</span>
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
                             </div>
 
                             {/* Weight Config */}
                             <div className="pb-6 border-b border-gray-100">
                                 <div className="font-semibold text-gray-700 mb-3">Weight Colors</div>
-                                {/* ... existing weight config ... */}
+                                {/* 3. Single Line Weight */}
                                 <div className="flex flex-row gap-6 items-center flex-wrap">
                                     {Object.entries(settings.weightConfig).map(([key, config]) => (
                                         <div key={key} className="flex items-center gap-2 bg-gray-50 p-2 rounded-lg border border-gray-200">
@@ -618,7 +744,6 @@
 
                             {/* Warnings */}
                             <div className="flex flex-col gap-4">
-                                {/* ... existing warnings ... */}
                                 <div className="flex items-center justify-between">
                                     <div className="flex-1">
                                         <div className="font-semibold text-gray-700">Age Warning</div>
@@ -1221,6 +1346,8 @@
         // ... (state, effects, and actions are largely unchanged) ...
         const fileInputRef = useRef(null);
         const [zoomLevel, setZoomLevel] = useState(() => { try { const saved = localStorage.getItem('kanban_zoom_level'); return saved ? parseFloat(saved) : 1; } catch(e) { return 1; } });
+        
+        // Settings State
         const [settings, setSettings] = useState(() => {
             try {
                 const saved = localStorage.getItem('kanban_settings_v30');
@@ -1267,13 +1394,78 @@
                 };
             }
         });
+
+        // Dashboard Layout State
+        const [dashboardLayout, setDashboardLayout] = useState(() => {
+            try {
+                const saved = localStorage.getItem('kanban_dashboard_layout');
+                return saved ? JSON.parse(saved) : [
+                    'projectSummary', 'teamWorkload', 'timeline', 'newTasks', 'completedTasks', 'delayedTasks', 'ongoingTasks'
+                ];
+            } catch (e) {
+                return ['projectSummary', 'teamWorkload', 'timeline', 'newTasks', 'completedTasks', 'delayedTasks', 'ongoingTasks'];
+            }
+        });
+
+        useEffect(() => {
+            localStorage.setItem('kanban_dashboard_layout', JSON.stringify(dashboardLayout));
+        }, [dashboardLayout]);
+
+        // Drag State for Widgets - MOVED TO TOP LEVEL
+        const [draggedWidget, setDraggedWidget] = useState(null);
+
+        // Projects State
+        const [projects, setProjects] = useState(() => { try { const saved = localStorage.getItem('kanban_data_v1'); return saved ? JSON.parse(saved) : [{ id: 'p1', name: 'Project Alpha', colorIndex: 0, icon: 'FolderKanban', tasks: [] }]; } catch (e) { return [{ id: 'p1', name: 'Project Alpha', colorIndex: 0, icon: 'FolderKanban', tasks: [] }]; } });
+
+        // Load kanban.json on startup
+        useEffect(() => {
+            const loadExternalConfig = async () => {
+                try {
+                    const response = await fetch('kanban.json');
+                    if (response.ok) {
+                        const config = await response.json();
+                        console.log('Loading configuration from kanban.json', config);
+                        
+                        if (config.settings) {
+                            setSettings(prev => ({...prev, ...config.settings}));
+                        }
+                        if (config.projects && Array.isArray(config.projects)) {
+                            setProjects(config.projects);
+                        }
+                    }
+                } catch (error) {
+                    // Silent failure expected if file doesn't exist or CORS blocks it (file:// protocol)
+                    console.log('Could not auto-load kanban.json (this is normal for fresh installs or file:// protocol):', error);
+                }
+            };
+            loadExternalConfig();
+        }, []);
+
         useEffect(() => { localStorage.setItem('kanban_settings_v30', JSON.stringify(settings)); if (settings.darkMode) { document.documentElement.classList.add('dark'); } else { document.documentElement.classList.remove('dark'); } }, [settings]);
         const updateSettings = (key, value) => { setSettings(prev => ({ ...prev, [key]: value })); };
         useEffect(() => { const handleWheel = (e) => { if (e.ctrlKey) { e.preventDefault(); setZoomLevel(prev => { let newZoom = prev - e.deltaY * 0.001; newZoom = Math.min(Math.max(0.5, newZoom), 2); return newZoom; }); } }; window.addEventListener('wheel', handleWheel, { passive: false }); return () => window.removeEventListener('wheel', handleWheel); }, []);
         useEffect(() => { localStorage.setItem('kanban_zoom_level', zoomLevel); document.documentElement.style.fontSize = `${16 * zoomLevel}px`; }, [zoomLevel]);
-        const [projects, setProjects] = useState(() => { try { const saved = localStorage.getItem('kanban_data_v1'); return saved ? JSON.parse(saved) : [{ id: 'p1', name: 'Project Alpha', colorIndex: 0, icon: 'FolderKanban', tasks: [] }]; } catch (e) { return [{ id: 'p1', name: 'Project Alpha', colorIndex: 0, icon: 'FolderKanban', tasks: [] }]; } });
+        
         const [activeProjectId, setActiveProjectId] = useState(null); const [searchQuery, setSearchQuery] = useState(''); const [collapsedProjects, setCollapsedProjects] = useState({}); const [isModalOpen, setIsModalOpen] = useState(false); const [isProjectModalOpen, setIsProjectModalOpen] = useState(false); const [editingTask, setEditingTask] = useState(null); const [activeColorPicker, setActiveColorPicker] = useState({ isOpen: false, type: 'line', targetId: null, position: { x: 0, y: 0 } });
+        
         useEffect(() => { localStorage.setItem('kanban_data_v1', JSON.stringify(projects)); }, [projects]);
+        
+        const handleSaveConfig = () => {
+            const configData = {
+                settings: settings,
+                projects: projects
+            };
+            const blob = new Blob([JSON.stringify(configData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'kanban.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        };
+
         const handleAddProject = (projectData) => { const newProj = { id: generateId(), name: projectData.name, colorIndex: projectData.colorIndex, icon: projectData.iconName, tasks: [] }; setProjects(prev => [...prev, newProj]); setCurrentView('ongoing'); };
         const handleUpdateProjectColor = (projectId, newColorIndex) => { setProjects(prev => prev.map(p => p.id === projectId ? { ...p, colorIndex: newColorIndex } : p)); };
         const handleRenameProject = (projectId, newName) => { setProjects(prev => prev.map(p => p.id === projectId ? { ...p, name: newName } : p)); };
@@ -1345,165 +1537,220 @@
             return ( <div className="w-full mt-2"><div className="flex h-2 w-full bg-gray-100 rounded-full overflow-hidden">{pTodo > 0 && <div style={{width: `${pTodo}%`}} className="bg-blue-400 h-full" title={`Todo: ${todo}`}></div>}{pWip > 0 && <div style={{width: `${pWip}%`}} className="bg-yellow-400 h-full" title={`WIP: ${wip}`}></div>}{pDone > 0 && <div style={{width: `${pDone}%`}} className="bg-green-400 h-full" title={`Completed: ${done}`}></div>}</div><div className="flex justify-between text-[10px] text-gray-400 mt-1"><span>{todo}</span><span>{wip}</span><span>{done}</span></div></div> );
         };
 
-        // --- Rendering ---
-
         const renderDashboard = () => {
             const priorityStyles = generateDynamicStyles(settings.priorityConfig);
+
+            // Drag Handlers for Dashboard Widgets
+            const handleWidgetDragStart = (e, index) => {
+                setDraggedWidget(index);
+                e.dataTransfer.effectAllowed = "move";
+            };
+
+            const handleWidgetDragOver = (e, index) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+            };
+
+            const handleWidgetDrop = (e, targetIndex) => {
+                e.preventDefault();
+                if (draggedWidget === null || draggedWidget === targetIndex) return;
+                
+                const newLayout = [...dashboardLayout];
+                const widget = newLayout.splice(draggedWidget, 1)[0];
+                newLayout.splice(targetIndex, 0, widget);
+                
+                setDashboardLayout(newLayout);
+                setDraggedWidget(null);
+            };
+
+            // Drag Handlers for Dashboard Tasks
+            const handleDashboardDragStart = (e, taskId) => {
+                e.dataTransfer.setData('taskId', taskId);
+                e.dataTransfer.effectAllowed = 'move';
+            };
+
+            const handleDashboardDragOver = (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+            };
+
+            const handleDashboardDrop = (e, newStatus) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const taskId = e.dataTransfer.getData('taskId');
+                if (taskId) {
+                    updateTaskStatus(taskId, newStatus);
+                }
+            };
+
+            // Widget Renderers
+            const renderWidgetContent = (widgetId) => {
+                switch(widgetId) {
+                    case 'projectSummary':
+                        return (
+                            <>
+                                <h3 className="text-lg font-bold text-gray-700 mb-6 flex items-center gap-2"><PieChart size={18}/> Project summary</h3>
+                                {stats.projectCharts.length > 0 ? (<div className="grid grid-cols-1 sm:grid-cols-2 gap-6">{stats.projectCharts.map(pc => (<div key={pc.name} className="flex flex-col items-center p-4 bg-gray-50 rounded-lg border border-gray-200"><h4 className="font-semibold text-gray-700 mb-4 truncate w-full text-center" title={pc.name}>{pc.name}</h4><DonutChart data={pc.data} size={100} showLegend={false} /><div className="mt-4 w-full grid grid-cols-3 gap-1 text-[10px] text-center text-gray-500"><div className="bg-blue-100 py-1 rounded text-blue-700">T: {pc.data[0].value}</div><div className="bg-yellow-100 py-1 rounded text-yellow-700">W: {pc.data[1].value}</div><div className="bg-green-100 py-1 rounded text-green-700">D: {pc.data[2].value}</div></div></div>))}</div>) : (<div className="text-center py-10 text-gray-400 italic">No project data available</div>)}
+                            </>
+                        );
+                    case 'teamWorkload':
+                        return (
+                            <>
+                                <h3 className="text-lg font-bold text-gray-700 mb-6 flex items-center gap-2"><User size={18}/> Distribution</h3>
+                                {Object.keys(stats.assigneeTasks).length === 0 ? (<div className="flex h-40 items-center justify-center text-gray-400 italic">No active tasks assigned</div>) : (
+                                    <div className="flex flex-col gap-4">
+                                    {Object.entries(stats.assigneeTasks).map(([name, data]) => {
+                                        const sortTasksByWeight = (taskList) => [...taskList].sort((a, b) => {
+                                            const wa = a.weight || 'light';
+                                            const wb = b.weight || 'light';
+                                            const valA = wa === 'heavy' ? 3 : wa === 'medium' ? 2 : 1;
+                                            const valB = wb === 'heavy' ? 3 : wb === 'medium' ? 2 : 1;
+                                            return valB - valA;
+                                        });
+                                        const totalTodoSorted = sortTasksByWeight(data.totalTodo); const totalWipSorted = sortTasksByWeight(data.totalWip); const totalDoneSorted = sortTasksByWeight(data.totalDone);
+                                        const activeScore = (data.totalTodo.length + data.totalWip.length);
+                                        return { name, total: { todo: totalTodoSorted, wip: totalWipSorted, done: totalDoneSorted }, score: activeScore };
+                                    }).sort((a, b) => b.score - a.score).slice(0, 8).map(({ name, total }) => {
+                                        const InlineBar = ({ tasks, label }) => {
+                                            const weightStyles = generateDynamicStyles(settings.weightConfig);
+                                            return (<div className="flex flex-col flex-1 min-w-0"><div className="flex justify-between items-end mb-1"><span className="text-[10px] text-gray-400 uppercase">{label}</span><span className="text-[10px] font-bold text-gray-600">{tasks.length || 0}</span></div><div className="h-2 bg-gray-100 rounded-full overflow-hidden flex w-full">{tasks.map(t => { const w = t.weight || 'light'; const widthClass = w === 'heavy' ? 'w-4' : w === 'medium' ? 'w-3' : 'w-1.5'; const style = weightStyles[w]?.styleObj?.backgroundColor ? { backgroundColor: weightStyles[w].styleObj.backgroundColor } : { backgroundColor: '#ccc'}; return <div key={t.id} className={`h-full border-r border-white/50 last:border-0 ${widthClass} shrink-0`} style={style} title={`${t.name} (${w})`}/> })}</div></div>)
+                                        }
+                                        return (<div key={name} className="bg-gray-50 p-3 rounded-lg border border-gray-100"><div className="flex items-center gap-3 mb-2"><div className="w-6 h-6 rounded-full bg-white flex items-center justify-center text-[10px] font-bold text-gray-600 border border-gray-200 shrink-0">{name.substring(0,2).toUpperCase()}</div><span className="font-bold text-sm text-gray-700">{name}</span></div><div className="flex gap-4"><InlineBar tasks={total.todo} label="Todo" /><InlineBar tasks={total.wip} label="WIP" /><InlineBar tasks={total.done} label="Comp" /></div></div>);
+                                    })}</div>
+                                )}
+                            </>
+                        );
+                    case 'timeline':
+                        return (
+                            <>
+                                <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-gray-700 flex items-center gap-2"><Clock size={18} className="text-indigo-500"/> Timeline</h3></div>
+                                <TimeChart tasks={projects.flatMap(p => p.tasks)} settings={settings} />
+                            </>
+                        );
+                    case 'newTasks':
+                        return (
+                            <div onDragOver={handleDashboardDragOver} onDrop={(e) => handleDashboardDrop(e, 'todo')} className="h-full">
+                                <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-gray-700 flex items-center gap-2"><Sparkles size={18} className="text-blue-500"/> New Tasks (this week)</h3></div>
+                                {stats.newTasksProjects.length === 0 ? (<p className="text-gray-400 text-sm italic">No new tasks this week.</p>) : (
+                                    <div className="grid grid-cols-2 gap-6">
+                                        <div className="min-h-[100px] border-2 border-dashed border-transparent hover:border-blue-200 rounded-lg p-1 transition-colors" onDragOver={handleDashboardDragOver} onDrop={(e) => handleDashboardDrop(e, 'todo')}>
+                                            <h4 className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-blue-500"></div> To Do</h4>
+                                            {stats.newTasksProjects.map(p => {
+                                                const tasks = p.tasks.filter(t => t.status === 'todo'); if (tasks.length === 0) return null;
+                                                const projectColor = settings.palette[p.colorIndex || 0];
+                                                return (<div key={p.id} className={`mb-4 pl-3 border-l-4`} style={{borderColor: projectColor}}><div className="text-xs font-bold text-gray-700 mb-1 flex items-center gap-1">{p.icon && ICONS[p.icon] && React.createElement(ICONS[p.icon], {size: 12})}{p.name}</div>{tasks.map(t => {
+                                                    const pStyle = priorityStyles[t.priority] || priorityStyles['3'];
+                                                    return (
+                                                    <div key={t.id} draggable onDragStart={(e) => handleDashboardDragStart(e, t.id)} onClick={() => openEditTaskModal(t)} className="bg-gray-50 p-2 mb-1 rounded text-sm border border-gray-100 text-gray-600 hover:bg-blue-50 hover:border-blue-200 cursor-pointer transition-colors flex items-center justify-between gap-2 active:cursor-grabbing">
+                                                        <div className="truncate font-medium text-gray-700 leading-tight">{t.type && <span className="text-gray-500 mr-1 text-[10px]">[{t.type}]</span>}{t.name}</div>
+                                                        <div className="flex items-center gap-2 shrink-0"><span className="text-[8px] px-1 py-0 rounded-full border font-bold uppercase" style={pStyle.styleObj}>{pStyle.label}</span>{t.targetDate && <span className="text-[10px] text-gray-400 font-mono">T:{formatDate(t.targetDate)}</span>}</div>
+                                                    </div>)})}</div>)
+                                            })}
+                                        </div>
+                                        <div className="min-h-[100px] border-2 border-dashed border-transparent hover:border-yellow-200 rounded-lg p-1 transition-colors" onDragOver={handleDashboardDragOver} onDrop={(e) => handleDashboardDrop(e, 'wip')}>
+                                            <h4 className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-yellow-500"></div> In Progress</h4>
+                                            {stats.newTasksProjects.map(p => {
+                                                const tasks = p.tasks.filter(t => t.status === 'wip'); if (tasks.length === 0) return null;
+                                                const projectColor = settings.palette[p.colorIndex || 0];
+                                                return (<div key={p.id} className={`mb-4 pl-3 border-l-4`} style={{borderColor: projectColor}}><div className="text-xs font-bold text-gray-700 mb-1 flex items-center gap-1">{p.icon && ICONS[p.icon] && React.createElement(ICONS[p.icon], {size: 12})}{p.name}</div>{tasks.map(t => {
+                                                    const pStyle = priorityStyles[t.priority] || priorityStyles['3'];
+                                                    return (
+                                                    <div key={t.id} draggable onDragStart={(e) => handleDashboardDragStart(e, t.id)} onClick={() => openEditTaskModal(t)} className="bg-gray-50 p-2 mb-1 rounded text-sm border border-gray-100 text-gray-600 hover:bg-blue-50 hover:border-blue-200 cursor-pointer transition-colors flex items-center justify-between gap-2 active:cursor-grabbing">
+                                                        <div className="truncate font-medium text-gray-700 leading-tight">{t.type && <span className="text-gray-500 mr-1 text-[10px]">[{t.type}]</span>}{t.name}</div>
+                                                        <div className="flex items-center gap-2 shrink-0"><span className="text-[8px] px-1 py-0 rounded-full border font-bold uppercase" style={pStyle.styleObj}>{pStyle.label}</span>{t.targetDate && <span className="text-[10px] text-gray-400 font-mono">T:{formatDate(t.targetDate)}</span>}</div>
+                                                    </div>)})}</div>)
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    case 'completedTasks':
+                        return (
+                            <div onDragOver={handleDashboardDragOver} onDrop={(e) => handleDashboardDrop(e, 'done')} className="h-full">
+                                <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-gray-700 flex items-center gap-2"><CheckCircle2 size={18} /> Completed Tasks (This week)</h3></div>
+                                {stats.completedTasksProjects.length === 0 ? (<p className="text-gray-400 text-sm italic">No tasks completed this week.</p>) : (
+                                    <div>{stats.completedTasksProjects.map(p => {
+                                        const projectColor = settings.palette[p.colorIndex || 0];
+                                        return (<div key={p.id} className={`mb-4 pl-3 border-l-4`} style={{borderColor: projectColor}}><div className="text-xs font-bold text-gray-700 mb-1 flex items-center gap-1">{p.icon && ICONS[p.icon] && React.createElement(ICONS[p.icon], {size: 12})}{p.name}</div>{p.tasks.map(t => {
+                                            const pStyle = priorityStyles[t.priority] || priorityStyles['3'];
+                                            return (
+                                            <div key={t.id} draggable onDragStart={(e) => handleDashboardDragStart(e, t.id)} onClick={() => openEditTaskModal(t)} className="bg-gray-50 p-2 mb-1 rounded text-sm border border-gray-100 text-gray-600 hover:bg-blue-50 hover:border-blue-200 cursor-pointer transition-colors flex items-center justify-between gap-2 active:cursor-grabbing">
+                                                <div className="truncate font-medium text-gray-700 leading-tight">{t.type && <span className="text-gray-500 mr-1 text-[10px]">[{t.type}]</span>}{t.name}</div>
+                                                <div className="flex items-center gap-2 shrink-0"><span className="text-[8px] px-1 py-0 rounded-full border font-bold uppercase" style={pStyle.styleObj}>{pStyle.label}</span><span className="text-[10px] text-gray-400 font-mono">E:{formatDate(t.end)}</span>{t.targetDate && <span className="text-[10px] text-gray-400 font-mono">T:{formatDate(t.targetDate)}</span>}</div>
+                                            </div>)})}</div>)
+                                    })}</div>
+                                )}
+                            </div>
+                        );
+                    case 'delayedTasks':
+                        return (
+                            <div className="h-full">
+                                <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-gray-700 flex items-center gap-2"><AlertCircle size={18} className="text-red-500"/> Delayed Tasks</h3></div>
+                                {stats.delayedTasksProjects.length === 0 ? (<p className="text-gray-400 text-sm italic">No tasks delayed.</p>) : (
+                                    <div className="space-y-4">{stats.delayedTasksProjects.map(p => (renderProjectRow(p, [{ title: 'Delayed', status: 'delayed', statuses: ['todo', 'wip'] }])))}</div>
+                                )}
+                            </div>
+                        );
+                    case 'ongoingTasks':
+                        return (
+                            <div onDragOver={handleDashboardDragOver} onDrop={(e) => handleDashboardDrop(e, 'wip')} className="h-full">
+                                <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-gray-700 flex items-center gap-2"><Activity size={18} className="text-yellow-500"/> Ongoing Tasks</h3></div>
+                                {stats.ongoingTasksProjects.length === 0 ? (<p className="text-gray-400 text-sm italic">No active tasks in progress.</p>) : (
+                                    <div>{stats.ongoingTasksProjects.map(p => {
+                                        const projectColor = settings.palette[p.colorIndex || 0];
+                                        return (<div key={p.id} className={`mb-4 pl-3 border-l-4`} style={{borderColor: projectColor}}><div className="text-xs font-bold text-gray-700 mb-1 flex items-center gap-1">{p.icon && ICONS[p.icon] && React.createElement(ICONS[p.icon], {size: 12})}{p.name}</div>{p.tasks.map(t => {
+                                            const pStyle = priorityStyles[t.priority] || priorityStyles['3'];
+                                            return (
+                                            <div key={t.id} draggable onDragStart={(e) => handleDashboardDragStart(e, t.id)} onClick={() => openEditTaskModal(t)} className="bg-gray-50 p-2 mb-1 rounded text-sm border border-gray-100 text-gray-600 hover:bg-blue-50 hover:border-blue-200 cursor-pointer transition-colors flex items-center justify-between gap-2 active:cursor-grabbing">
+                                                <div className="truncate font-medium text-gray-700 leading-tight">{t.type && <span className="text-gray-500 mr-1 text-[10px]">[{t.type}]</span>}{t.name}</div>
+                                                <div className="flex items-center gap-2 shrink-0"><span className="text-[8px] px-1 py-0 rounded-full border font-bold uppercase" style={pStyle.styleObj}>{pStyle.label}</span>{t.targetDate && <span className="text-[10px] text-gray-400 font-mono">T:{formatDate(t.targetDate)}</span>}</div>
+                                            </div>)})}</div>)
+                                    })}</div>
+                                )}
+                            </div>
+                        );
+                    default: return null;
+                }
+            };
 
             return (
             <div className="p-8 max-w-7xl mx-auto space-y-8 animate-in fade-in duration-500 overflow-y-auto h-full">
 
-            {/* Row 1: KPI Compact */}
+            {/* Row 1: KPI Compact (Fixed) */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div className="bg-white p-3 rounded-lg shadow-sm border border-gray-100 flex items-center justify-between"><div><p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Projects</p><h3 className="text-2xl font-black text-gray-800">{stats.totalProjects}</h3></div><div className="p-2 rounded-full bg-indigo-50 text-indigo-500"><Layers size={20}/></div></div>
-                <div className="bg-white p-3 rounded-lg shadow-sm border border-gray-100 flex flex-col justify-center"><div className="flex justify-between items-end"><p className="text-xs text-gray-500 font-bold uppercase tracking-wider">This Week (Active/Completed)</p><span className="text-[10px] text-gray-400">Week Activity</span></div><KPIBar todo={stats.thisWeekStats.todo} wip={stats.thisWeekStats.wip} done={stats.thisWeekStats.done} /></div>
-                <div className="bg-white p-3 rounded-lg shadow-sm border border-gray-100 flex flex-col justify-center"><div className="flex justify-between items-end"><p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Last Week (Active/Completed)</p><span className="text-[10px] text-gray-400">Week Activity</span></div><KPIBar todo={stats.lastWeekStats.todo} wip={stats.lastWeekStats.wip} done={stats.lastWeekStats.done} /></div>
-                <div className="bg-white p-3 rounded-lg shadow-sm border border-gray-100 flex flex-col justify-center"><div className="flex justify-between items-end"><p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Total (Todo | WIP / Completed)</p><span className="text-[10px] text-gray-400">Backlog Overview</span></div><KPIBar todo={stats.totalTodo} wip={stats.totalWip} done={stats.totalCompleted} /></div>
+                <div className="bg-white p-3 rounded-lg shadow-sm border border-gray-100 flex flex-col justify-center"><div className="flex justify-between items-end"><p className="text-xs text-gray-500 font-bold uppercase tracking-wider">This week</p><span className="text-[10px] text-gray-400">(Active/Completed)</span></div><KPIBar todo={stats.thisWeekStats.todo} wip={stats.thisWeekStats.wip} done={stats.thisWeekStats.done} /></div>
+                <div className="bg-white p-3 rounded-lg shadow-sm border border-gray-100 flex flex-col justify-center"><div className="flex justify-between items-end"><p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Last Week</p><span className="text-[10px] text-gray-400">(Active/Completed)</span></div><KPIBar todo={stats.lastWeekStats.todo} wip={stats.lastWeekStats.wip} done={stats.lastWeekStats.done} /></div>
+                <div className="bg-white p-3 rounded-lg shadow-sm border border-gray-100 flex flex-col justify-center"><div className="flex justify-between items-end"><p className="text-xs text-gray-500 font-bold uppercase tracking-wider">TOTAL</p><span className="text-[10px] text-gray-400">TODO/WIP/Done</span></div><KPIBar todo={stats.totalTodo} wip={stats.totalWip} done={stats.totalCompleted} /></div>
             </div>
 
-            {/* Row 2: Project Summary & Team Workload */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100"><h3 className="text-lg font-bold text-gray-700 mb-6 flex items-center gap-2"><PieChart size={18}/> Project summary</h3>
-                {stats.projectCharts.length > 0 ? (<div className="grid grid-cols-1 sm:grid-cols-2 gap-6">{stats.projectCharts.map(pc => (<div key={pc.name} className="flex flex-col items-center p-4 bg-gray-50 rounded-lg border border-gray-200"><h4 className="font-semibold text-gray-700 mb-4 truncate w-full text-center" title={pc.name}>{pc.name}</h4><DonutChart data={pc.data} size={100} showLegend={false} /><div className="mt-4 w-full grid grid-cols-3 gap-1 text-[10px] text-center text-gray-500"><div className="bg-blue-100 py-1 rounded text-blue-700">T: {pc.data[0].value}</div><div className="bg-yellow-100 py-1 rounded text-yellow-700">W: {pc.data[1].value}</div><div className="bg-green-100 py-1 rounded text-green-700">D: {pc.data[2].value}</div></div></div>))}</div>) : (<div className="text-center py-10 text-gray-400 italic">No project data available</div>)}</div>
-
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100"><h3 className="text-lg font-bold text-gray-700 mb-6 flex items-center gap-2"><User size={18}/> Team Workload (Total)</h3>
-                {Object.keys(stats.assigneeTasks).length === 0 ? (<div className="flex h-40 items-center justify-center text-gray-400 italic">No active tasks assigned</div>) : (
-                    <div className="flex flex-col gap-4">
-                    {Object.entries(stats.assigneeTasks).map(([name, data]) => {
-                        // Removed invalid generateStyles call
-                        // Sorting helper
-                        const sortTasksByWeight = (taskList) => [...taskList].sort((a, b) => {
-                            const wa = a.weight || 'light';
-                            const wb = b.weight || 'light';
-                            // Quick sort weight: heavy=3, medium=2, light=1
-                            const valA = wa === 'heavy' ? 3 : wa === 'medium' ? 2 : 1;
-                            const valB = wb === 'heavy' ? 3 : wb === 'medium' ? 2 : 1;
-                            return valB - valA;
-                        });
-                        const totalTodoSorted = sortTasksByWeight(data.totalTodo); const totalWipSorted = sortTasksByWeight(data.totalWip); const totalDoneSorted = sortTasksByWeight(data.totalDone);
-                        const activeScore = (data.totalTodo.length + data.totalWip.length);
-                        return { name, total: { todo: totalTodoSorted, wip: totalWipSorted, done: totalDoneSorted }, score: activeScore };
-                    }).sort((a, b) => b.score - a.score).slice(0, 8).map(({ name, total }) => {
-                        const InlineBar = ({ tasks, label }) => {
-                            // Needs to access weight config from closure or prop.
-                            // Re-using generator here slightly inefficient but safe.
-                            const weightStyles = generateDynamicStyles(settings.weightConfig);
-                            return (<div className="flex flex-col flex-1 min-w-0"><div className="flex justify-between items-end mb-1"><span className="text-[10px] text-gray-400 uppercase">{label}</span><span className="text-[10px] font-bold text-gray-600">{tasks.length || 0}</span></div><div className="h-2 bg-gray-100 rounded-full overflow-hidden flex w-full">{tasks.map(t => { const w = t.weight || 'light'; const widthClass = w === 'heavy' ? 'w-4' : w === 'medium' ? 'w-3' : 'w-1.5'; const style = weightStyles[w]?.styleObj?.backgroundColor ? { backgroundColor: weightStyles[w].styleObj.backgroundColor } : { backgroundColor: '#ccc'}; return <div key={t.id} className={`h-full border-r border-white/50 last:border-0 ${widthClass} shrink-0`} style={style} title={`${t.name} (${w})`}/> })}</div></div>)
-                        }
-                        return (<div key={name} className="bg-gray-50 p-3 rounded-lg border border-gray-100"><div className="flex items-center gap-3 mb-2"><div className="w-6 h-6 rounded-full bg-white flex items-center justify-center text-[10px] font-bold text-gray-600 border border-gray-200 shrink-0">{name.substring(0,2).toUpperCase()}</div><span className="font-bold text-sm text-gray-700">{name}</span></div><div className="flex gap-4"><InlineBar tasks={total.todo} label="Todo" /><InlineBar tasks={total.wip} label="WIP" /><InlineBar tasks={total.done} label="Comp" /></div></div>);
-                    })}</div>
-                )}</div>
-            </div>
-
-            {/* Row 3: New Tasks & Completed Tasks (Swapped Ongoing to Row 4) */}
-            <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {/* New Tasks */}
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                    <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-gray-700 flex items-center gap-2"><Sparkles size={18} className="text-blue-500"/> New Tasks (this week)</h3></div>
-                    {stats.newTasksProjects.length === 0 ? (<p className="text-gray-400 text-sm italic">No new tasks this week.</p>) : (
-                        <div className="grid grid-cols-2 gap-6">
-                            <div><h4 className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-blue-500"></div> To Do</h4>
-                                {stats.newTasksProjects.map(p => {
-                                    const tasks = p.tasks.filter(t => t.status === 'todo'); if (tasks.length === 0) return null;
-                                    const projectColor = settings.palette[p.colorIndex || 0];
-                                    return (<div key={p.id} className={`mb-4 pl-3 border-l-4`} style={{borderColor: projectColor}}><div className="text-xs font-bold text-gray-700 mb-1 flex items-center gap-1">{p.icon && ICONS[p.icon] && React.createElement(ICONS[p.icon], {size: 12})}{p.name}</div>{tasks.map(t => {
-                                        const pStyle = priorityStyles[t.priority] || priorityStyles['3'];
-                                        return (
-                                        <div key={t.id} onClick={() => openEditTaskModal(t)} className="bg-gray-50 p-2 mb-1 rounded text-sm border border-gray-100 text-gray-600 hover:bg-blue-50 hover:border-blue-200 cursor-pointer transition-colors flex items-center justify-between gap-2">
-                                            <div className="truncate font-medium text-gray-700 leading-tight">
-                                                {t.type && <span className="text-gray-500 mr-1 text-[10px]">[{t.type}]</span>}{t.name}
-                                            </div>
-                                            <div className="flex items-center gap-2 shrink-0">
-                                                <span className="text-[8px] px-1 py-0 rounded-full border font-bold uppercase" style={pStyle.styleObj}>{pStyle.label}</span>
-                                                {t.targetDate && <span className="text-[10px] text-gray-400 font-mono">T:{formatDate(t.targetDate)}</span>}
-                                            </div>
-                                        </div>
-                                    )})}</div>)
-                                })}
+            {/* Moveable Dashboard Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8">
+                {dashboardLayout.map((widgetId, index) => {
+                    const isFullWidth = widgetId === 'timeline';
+                    return (
+                        <div
+                            key={widgetId}
+                            draggable
+                            onDragStart={(e) => handleWidgetDragStart(e, index)}
+                            onDragOver={(e) => handleWidgetDragOver(e, index)}
+                            onDrop={(e) => handleWidgetDrop(e, index)}
+                            className={`bg-white p-6 rounded-xl shadow-sm border border-gray-100 transition-all ${isFullWidth ? 'lg:col-span-2' : 'lg:col-span-1'} ${draggedWidget === index ? 'opacity-50 scale-95 border-dashed border-2 border-blue-300' : ''} group relative`}
+                        >
+                            {/* Drag Handle Icon - Visible on hover */}
+                            <div className="absolute top-2 right-2 p-1 text-gray-300 opacity-0 group-hover:opacity-100 widget-drag-handle cursor-grab active:cursor-grabbing hover:bg-gray-50 rounded">
+                                <Move size={14} />
                             </div>
-                            <div><h4 className="text-xs font-bold text-gray-500 uppercase mb-2 flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-yellow-500"></div> In Progress</h4>
-                                {stats.newTasksProjects.map(p => {
-                                    const tasks = p.tasks.filter(t => t.status === 'wip'); if (tasks.length === 0) return null;
-                                    const projectColor = settings.palette[p.colorIndex || 0];
-                                    return (<div key={p.id} className={`mb-4 pl-3 border-l-4`} style={{borderColor: projectColor}}><div className="text-xs font-bold text-gray-700 mb-1 flex items-center gap-1">{p.icon && ICONS[p.icon] && React.createElement(ICONS[p.icon], {size: 12})}{p.name}</div>{tasks.map(t => {
-                                        const pStyle = priorityStyles[t.priority] || priorityStyles['3'];
-                                        return (
-                                        <div key={t.id} onClick={() => openEditTaskModal(t)} className="bg-gray-50 p-2 mb-1 rounded text-sm border border-gray-100 text-gray-600 hover:bg-blue-50 hover:border-blue-200 cursor-pointer transition-colors flex items-center justify-between gap-2">
-                                            <div className="truncate font-medium text-gray-700 leading-tight">
-                                                {t.type && <span className="text-gray-500 mr-1 text-[10px]">[{t.type}]</span>}{t.name}
-                                            </div>
-                                            <div className="flex items-center gap-2 shrink-0">
-                                                <span className="text-[8px] px-1 py-0 rounded-full border font-bold uppercase" style={pStyle.styleObj}>{pStyle.label}</span>
-                                                {t.targetDate && <span className="text-[10px] text-gray-400 font-mono">T:{formatDate(t.targetDate)}</span>}
-                                            </div>
-                                        </div>
-                                    )})}</div>)
-                                })}
-                            </div>
+                            {renderWidgetContent(widgetId)}
                         </div>
-                    )}
-                </div>
-
-                {/* Completed Tasks (Swapped from Row 4) */}
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                    <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-gray-700 flex items-center gap-2"><CheckCircle2 size={18} /> Completed Tasks (This week)</h3></div>
-                    {stats.completedTasksProjects.length === 0 ? (<p className="text-gray-400 text-sm italic">No tasks completed this week.</p>) : (
-                        <div>{stats.completedTasksProjects.map(p => {
-                            const projectColor = settings.palette[p.colorIndex || 0];
-                            return (<div key={p.id} className={`mb-4 pl-3 border-l-4`} style={{borderColor: projectColor}}><div className="text-xs font-bold text-gray-700 mb-1 flex items-center gap-1">{p.icon && ICONS[p.icon] && React.createElement(ICONS[p.icon], {size: 12})}{p.name}</div>{p.tasks.map(t => {
-                                const pStyle = priorityStyles[t.priority] || priorityStyles['3'];
-                                return (
-                                <div key={t.id} onClick={() => openEditTaskModal(t)} className="bg-gray-50 p-2 mb-1 rounded text-sm border border-gray-100 text-gray-600 hover:bg-blue-50 hover:border-blue-200 cursor-pointer transition-colors flex items-center justify-between gap-2">
-                                    <div className="truncate font-medium text-gray-700 leading-tight">
-                                        {t.type && <span className="text-gray-500 mr-1 text-[10px]">[{t.type}]</span>}{t.name}
-                                    </div>
-                                    <div className="flex items-center gap-2 shrink-0">
-                                        <span className="text-[8px] px-1 py-0 rounded-full border font-bold uppercase" style={pStyle.styleObj}>{pStyle.label}</span>
-                                        <span className="text-[10px] text-gray-400 font-mono">E:{formatDate(t.end)}</span>
-                                        {t.targetDate && <span className="text-[10px] text-gray-400 font-mono">T:{formatDate(t.targetDate)}</span>}
-                                    </div>
-                                </div>
-                            )})}</div>)
-                        })}</div>
-                    )}
-                </div>
+                    );
+                })}
             </div>
 
-            {/* Row 4: Tasks Delayed & Ongoing Tasks (Swapped) */}
-            <div className="grid grid-cols-2 gap-8 mt-8">
-                {/* Tasks Delayed Table */}
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                    <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-gray-700 flex items-center gap-2"><AlertCircle size={18} className="text-red-500"/> Tasks Delayed</h3></div>
-                    {stats.delayedTasksProjects.length === 0 ? (<p className="text-gray-400 text-sm italic">No tasks delayed.</p>) : (
-                        <div className="space-y-4">{stats.delayedTasksProjects.map(p => (renderProjectRow(p, [{ title: 'Delayed', status: 'delayed', statuses: ['todo', 'wip'] }])))}</div>
-                    )}
-                </div>
-
-                {/* Ongoing Tasks */}
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                    <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-gray-700 flex items-center gap-2"><Activity size={18} className="text-yellow-500"/> Ongoing Tasks</h3></div>
-                    {stats.ongoingTasksProjects.length === 0 ? (<p className="text-gray-400 text-sm italic">No active tasks in progress.</p>) : (
-                        <div>{stats.ongoingTasksProjects.map(p => {
-                            const projectColor = settings.palette[p.colorIndex || 0];
-                            return (<div key={p.id} className={`mb-4 pl-3 border-l-4`} style={{borderColor: projectColor}}><div className="text-xs font-bold text-gray-700 mb-1 flex items-center gap-1">{p.icon && ICONS[p.icon] && React.createElement(ICONS[p.icon], {size: 12})}{p.name}</div>{p.tasks.map(t => {
-                                const pStyle = priorityStyles[t.priority] || priorityStyles['3'];
-                                return (
-                                <div key={t.id} onClick={() => openEditTaskModal(t)} className="bg-gray-50 p-2 mb-1 rounded text-sm border border-gray-100 text-gray-600 hover:bg-blue-50 hover:border-blue-200 cursor-pointer transition-colors flex items-center justify-between gap-2">
-                                    <div className="truncate font-medium text-gray-700 leading-tight">
-                                        {t.type && <span className="text-gray-500 mr-1 text-[10px]">[{t.type}]</span>}{t.name}
-                                    </div>
-                                    <div className="flex items-center gap-2 shrink-0">
-                                        <span className="text-[8px] px-1 py-0 rounded-full border font-bold uppercase" style={pStyle.styleObj}>{pStyle.label}</span>
-                                        {t.targetDate && <span className="text-[10px] text-gray-400 font-mono">T:{formatDate(t.targetDate)}</span>}
-                                    </div>
-                                </div>
-                            )})}</div>)
-                        })}</div>
-                    )}
-                </div>
             </div>
-            </div>
-        )};
+            );
+        };
 
         const renderProjectRow = (project, columns) => {
             const todoCount = project.tasks.filter(t => t.status === 'todo' && isTaskLeaf(project.tasks.indexOf(t), project.tasks)).length;
@@ -1811,7 +2058,7 @@
             <main className="flex-1 overflow-hidden bg-gray-50 relative" onClick={() => setActiveColorPicker({ ...activeColorPicker, isOpen: false })}>
                 {currentView === 'dashboard' && renderDashboard()}
                 {currentView === 'import' && <ImportView onImport={handlePlainTextImport} />}
-                {currentView === 'settings' && <SettingsView settings={settings} onUpdateSettings={updateSettings} />}
+                {currentView === 'settings' && <SettingsView settings={settings} onUpdateSettings={updateSettings} onSaveConfig={handleSaveConfig} />}
 
                 {currentView === 'ongoing' && (
                 <div className="h-full overflow-y-auto p-6 space-y-8">
