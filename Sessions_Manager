@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QMessageBox, QColorDialog, QAbstractItemView, QStyle,
     QHeaderView, QStyleOptionViewItem, QFileDialog, QStyleOptionHeader,
     QDialog, QGridLayout, QLabel, QTabWidget, QDialogButtonBox, QMenu,
-    QFrame, QTreeWidgetItemIterator
+    QFrame, QTreeWidgetItemIterator, QTextEdit
 )
 from PyQt6.QtGui import (
     QColor, QBrush, QPen, QIcon, QPixmap, QAction, QGuiApplication, QPainter, QFont, QPalette
@@ -38,16 +38,17 @@ COL_PORT = 5
 COL_LOGIN = 6
 COL_PASSWORD = 7
 COL_PATH = 8
-# Actions
-COL_ACT_RUN = 9
-COL_ACT_DUP = 10
-COL_ACT_DEL = 11
-COL_ACT_UP = 12
-COL_ACT_DOWN = 13
-# Colors
-COL_C1 = 14
-COL_C2 = 15
-COL_COUNT = 16
+COL_NOTE = 9  # New Column
+# Actions (Shifted by 1)
+COL_ACT_RUN = 10
+COL_ACT_DUP = 11
+COL_ACT_DEL = 12
+COL_ACT_UP = 13
+COL_ACT_DOWN = 14
+# Colors (Shifted by 1)
+COL_C1 = 15
+COL_C2 = 16
+COL_COUNT = 17
 
 # Data Roles for storage
 ROLE_ID = Qt.ItemDataRole.UserRole + 1
@@ -79,7 +80,7 @@ class MergedHeaderView(QHeaderView):
         super().__init__(orientation, parent)
 
     def paintSection(self, painter, rect, logicalIndex):
-        # Action Block (Columns 9-13)
+        # Action Block (Columns 10-14)
         if COL_ACT_RUN <= logicalIndex <= COL_ACT_DOWN:
             painter.save()
             opt = QStyleOptionHeader()
@@ -105,6 +106,33 @@ class MergedHeaderView(QHeaderView):
             painter.restore()
         else:
             super().paintSection(painter, rect, logicalIndex)
+
+
+# --- DIALOGS ---
+
+class NoteDialog(QDialog):
+    """Dialog for editing multi-line notes."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Note")
+        self.resize(400, 300)
+        self.layout = QVBoxLayout(self)
+
+        self.label = QLabel("Enter note (multiple lines allowed):")
+        self.layout.addWidget(self.label)
+
+        self.text_edit = QTextEdit()
+        self.text_edit.setPlainText(text)
+        self.layout.addWidget(self.text_edit)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        self.layout.addWidget(btns)
+
+    def get_text(self):
+        return self.text_edit.toPlainText()
 
 
 # --- CUSTOM TREE WIDGET ---
@@ -146,10 +174,20 @@ class SessionDelegate(QStyledItemDelegate):
             if text:
                 option.text = "●" * 8  # Mask characters
 
+        # Replace newlines in Note column for display (show first line or '...')
+        if index.column() == COL_NOTE:
+            text = index.data(Qt.ItemDataRole.DisplayRole)
+            if text:
+                # Show only first line or a summary symbol if multi-line
+                if "\n" in text:
+                    option.text = text.split("\n")[0] + "..."
+                else:
+                    option.text = text
+
     def createEditor(self, parent, option, index):
         col = index.column()
-        # No editors for Icon, Actions, or Colors
-        if col == COL_ICON or col >= COL_ACT_RUN:
+        # No editors for Icon, Actions, Colors, OR Note (Note uses custom dialog)
+        if col == COL_ICON or col >= COL_ACT_RUN or col == COL_NOTE:
             return None
 
         # Logic: If Group, only edit Title/Type/Env
@@ -234,6 +272,10 @@ class SessionDelegate(QStyledItemDelegate):
 
         elif col == COL_PASSWORD:
             # Draw masked text
+            super().paint(painter, opt, index)
+
+        elif col == COL_NOTE:
+            # Delegate initStyleOption handles text abbreviation, we just paint it
             super().paint(painter, opt, index)
 
         elif col < COL_ACT_RUN:
@@ -358,7 +400,7 @@ class SessionKeeperApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Session Keeper V3.0 (Revamped)")
-        self.setGeometry(100, 100, 1400, 700)
+        self.setGeometry(100, 100, 1500, 700)  # Slightly wider to accommodate new column
 
         self.central = QWidget()
         self.setCentralWidget(self.central)
@@ -391,7 +433,8 @@ class SessionKeeperApp(QMainWindow):
         self.tree = SessionTreeWidget()
         self.tree.setColumnCount(COL_COUNT)
         self.tree.setHeaderLabels(
-            ["", "Title", "Type", "Env", "Destination", "Port", "Login", "Password", "Path", "", "", "", "", "", "C1",
+            ["", "Title", "Type", "Env", "Destination", "Port", "Login", "Password", "Path", "Note", "", "", "", "", "",
+             "C1",
              "C2"])
 
         # Header setup
@@ -405,6 +448,7 @@ class SessionKeeperApp(QMainWindow):
         self.tree.setColumnWidth(COL_ENV, 70)
         self.tree.setColumnWidth(COL_DEST, 140)
         self.tree.setColumnWidth(COL_PORT, 60)
+        self.tree.setColumnWidth(COL_NOTE, 150)  # Width for Note
         self.tree.setColumnWidth(COL_C1, 40)
         self.tree.setColumnWidth(COL_C2, 40)
 
@@ -480,6 +524,7 @@ class SessionKeeperApp(QMainWindow):
         item.setText(COL_LOGIN, data_dict.get('login', ''))
         item.setText(COL_PASSWORD, data_dict.get('password', ''))
         item.setText(COL_PATH, data_dict.get('path', ''))
+        item.setText(COL_NOTE, data_dict.get('note', ''))  # Set Note
 
         self._setup_buttons(item)
         return item
@@ -548,7 +593,8 @@ class SessionKeeperApp(QMainWindow):
         data = {
             'title': 'New Group' if is_group else 'New Session',
             'type': 'Group' if is_group else 'SSH',
-            'icon': default_icon
+            'icon': default_icon,
+            'note': ''
         }
 
         item = self.create_item_widget(parent, data)
@@ -622,6 +668,11 @@ class SessionKeeperApp(QMainWindow):
             self._pick_color(item, ROLE_C1, COL_C1)
         elif col == COL_C2:
             self._pick_color(item, ROLE_C2, COL_C2)
+        elif col == COL_NOTE:
+            # Open Note Dialog
+            dlg = NoteDialog(item.text(COL_NOTE), self)
+            if dlg.exec():
+                item.setText(COL_NOTE, dlg.get_text())
         elif col < COL_ACT_RUN:
             self.tree.editItem(item, col)
 
@@ -686,6 +737,7 @@ class SessionKeeperApp(QMainWindow):
             'login': item.text(COL_LOGIN),
             'password': item.text(COL_PASSWORD),
             'path': item.text(COL_PATH),
+            'note': item.text(COL_NOTE),  # Save Note
             'icon': item.data(COL_ICON, ROLE_ICON_PATH),
             'c1': item.data(COL_C1, ROLE_C1),
             'c2': item.data(COL_C2, ROLE_C2),
@@ -711,7 +763,7 @@ class SessionKeeperApp(QMainWindow):
             with open(DATA_FILE, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f,
                                         fieldnames=['id', 'parent_id', 'title', 'type', 'env', 'dest', 'port', 'login',
-                                                    'password', 'path', 'icon', 'c1', 'c2'])
+                                                    'password', 'path', 'note', 'icon', 'c1', 'c2'])
                 writer.writeheader()
                 writer.writerows(rows)
 
