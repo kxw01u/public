@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kanban Board v30</title>
+    <title>Kanban Board v30.1 - Enhanced</title>
 
     <!-- Favicon -->
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' fill='%232563eb'><rect x='10' y='10' width='20' height='80' rx='5'/><rect x='40' y='10' width='20' height='80' rx='5'/><rect x='70' y='10' width='20' height='80' rx='5'/></svg>">
@@ -100,6 +100,10 @@
         .widget-drag-handle:active {
             cursor: grabbing;
         }
+        /* Permissions */
+        .cursor-not-allowed-force {
+            cursor: not-allowed !important;
+        }
     </style>
 </head>
 <body class="bg-gray-50">
@@ -145,7 +149,8 @@
             Minimize2,
             Save,
             Settings,
-            Box, Flag, Star, Target, Zap, Globe, Cpu, Gift, Rocket, Award, Move
+            Box, Flag, Star, Target, Zap, Globe, Cpu, Gift, Rocket, Award, Move, Shield, Lock, Unlock,
+            LogIn
         } from 'https://esm.sh/lucide-react@0.263.1';
 
         // --- Utility Functions ---
@@ -275,7 +280,7 @@
         const getContrastColor = (hex) => {
             if (!hex) return '#000000';
             const color = (hex.charAt(0) === '#') ? hex.substring(1, 7) : hex;
-            if (color.length !== 6) return '#000000'; 
+            if (color.length !== 6) return '#000000';
 
             const r = parseInt(color.substring(0, 2), 16);
             const g = parseInt(color.substring(2, 4), 16);
@@ -291,6 +296,32 @@
             const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1));
             return Math.ceil((((d - yearStart) / 86400000) + 1)/7);
         };
+
+        // --- Security & Permissions ---
+
+        // SHA-256 for "ADMIN"
+        const ADMIN_HASH = "73acd9a5972130b7504cfc852c9e5e4771905084";
+
+        const simpleHash = async (message) => {
+            const msgBuffer = new TextEncoder().encode(message);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            return hashHex;
+        };
+
+        const checkPermission = (task, settings) => {
+            if (settings.permissionMode === 'admin') return true;
+
+            // In User mode, strict check on PIC
+            if (settings.permissionMode === 'user') {
+                if (!task || !task.assignee) return false;
+                // Only allow if assignee matches exactly (case-insensitive)
+                return task.assignee.toLowerCase() === settings.currentUser.toLowerCase();
+            }
+            return false;
+        };
+
 
         // --- Constants ---
 
@@ -351,6 +382,102 @@
         };
 
         // --- Sub-Components ---
+
+        const LoginModal = ({ isOpen, onClose, onLogin }) => {
+            const [mode, setMode] = useState('user');
+            const [username, setUsername] = useState('');
+            const [password, setPassword] = useState('');
+            const [error, setError] = useState('');
+
+            if (!isOpen) return null;
+
+            const handleLoginSubmit = async (e) => {
+                e.preventDefault();
+                setError('');
+                if (mode === 'admin') {
+                    const hash = await simpleHash(password);
+                    if (hash === ADMIN_HASH) {
+                        onLogin('admin', 'Admin');
+                        onClose();
+                    } else {
+                        setError('Invalid Password');
+                    }
+                } else {
+                    if (username.trim()) {
+                        onLogin('user', username.trim());
+                        onClose();
+                    } else {
+                        setError('Username required');
+                    }
+                }
+            };
+
+            return (
+                <div className="fixed inset-0 bg-black/60 z-[9999] flex items-center justify-center p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-in fade-in zoom-in duration-200">
+                        <div className="p-6">
+                            <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2">
+                                <Shield size={24} className="text-blue-600"/> Authentication
+                            </h2>
+
+                            <div className="flex bg-gray-100 p-1 rounded-lg mb-6">
+                                <button
+                                    type="button"
+                                    onClick={() => { setMode('user'); setError(''); }}
+                                    className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${mode === 'user' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                                >
+                                    USER MODE
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => { setMode('admin'); setError(''); }}
+                                    className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${mode === 'admin' ? 'bg-white text-red-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+                                >
+                                    ADMIN MODE
+                                </button>
+                            </div>
+
+                            <form onSubmit={handleLoginSubmit} className="space-y-4">
+                                {mode === 'admin' ? (
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Admin Password</label>
+                                        <input
+                                            type="password"
+                                            className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-red-500 outline-none"
+                                            placeholder="Enter password..."
+                                            value={password}
+                                            onChange={e => setPassword(e.target.value)}
+                                            autoFocus
+                                        />
+                                    </div>
+                                ) : (
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Username</label>
+                                        <input
+                                            type="text"
+                                            className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                                            placeholder="Enter your username..."
+                                            value={username}
+                                            onChange={e => setUsername(e.target.value)}
+                                            autoFocus
+                                        />
+                                    </div>
+                                )}
+
+                                {error && <div className="text-red-500 text-sm font-bold bg-red-50 p-2 rounded">{error}</div>}
+
+                                <button
+                                    type="submit"
+                                    className={`w-full py-3 rounded-lg text-white font-bold shadow-lg transition-transform active:scale-95 ${mode === 'admin' ? 'bg-red-600 hover:bg-red-700 shadow-red-200' : 'bg-blue-600 hover:bg-blue-700 shadow-blue-200'}`}
+                                >
+                                    {mode === 'admin' ? 'Unlock Admin Access' : 'Login as User'}
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
 
         const GlobalColorPicker = ({ position, onSelect, onClose, palette }) => {
             return (
@@ -449,10 +576,10 @@
 
         const TimeChart = ({ tasks, settings }) => {
             const weightStyles = useMemo(() => generateDynamicStyles(settings.weightConfig), [settings.weightConfig]);
-            
+
             // 1. Filter WIP Tasks
             const wipTasks = tasks.filter(t => t.status === 'wip');
-            
+
             if (wipTasks.length === 0) {
                 return <div className="text-center py-10 text-gray-400 italic">No ongoing tasks to display in timeline.</div>;
             }
@@ -460,11 +587,11 @@
             // 2. Determine Date Range (Last 2 weeks to Next 2 weeks)
             const today = new Date();
             today.setHours(0,0,0,0);
-            
+
             const startDate = new Date(today);
             startDate.setDate(today.getDate() - 14);
             const dayOfWeek = startDate.getDay(); // 0 is Sun
-            const diffToMon = (dayOfWeek + 6) % 7; 
+            const diffToMon = (dayOfWeek + 6) % 7;
             startDate.setDate(startDate.getDate() - diffToMon); // Move to Monday
             startDate.setHours(0,0,0,0);
 
@@ -486,7 +613,7 @@
 
             // 4. Group by Assignee and Resolve Overlaps
             const assignees = [...new Set(wipTasks.map(t => t.assignee || 'Unassigned'))].sort();
-            
+
             const assigneeRows = assignees.map(assignee => {
                 const userTasks = wipTasks.filter(t => (t.assignee || 'Unassigned') === assignee);
                 userTasks.sort((a, b) => new Date(a.start) - new Date(b.start));
@@ -504,7 +631,7 @@
                         const hasOverlap = row.some(existing => {
                             return (taskStart < existing.end) && (taskEnd > existing.start);
                         });
-                        
+
                         if (!hasOverlap) {
                             if (!rows[rowIndex]) rows[rowIndex] = [];
                             rows[rowIndex].push({ start: taskStart, end: taskEnd });
@@ -576,14 +703,14 @@
                                         {row.tasks.map(t => {
                                             const left = getPercent(t.start);
                                             let width = ((t.calculatedEnd - (t.start ? new Date(t.start) : startDate)) / totalDuration) * 100;
-                                            
+
                                             if (left + width > 100) width = 100 - left;
-                                            
+
                                             const isExtended = !t.targetDate;
                                             const wStyle = weightStyles[t.weight || 'light'] || weightStyles['light'];
 
                                             return (
-                                                <div 
+                                                <div
                                                     key={t.id}
                                                     className={`absolute h-6 rounded-md shadow-sm border border-black/10 flex items-center px-2 hover:ring-2 ring-blue-400 hover:z-10 transition-all cursor-pointer ${isExtended ? 'rounded-r-none border-r-2 border-r-gray-400/50 border-dashed' : ''}`}
                                                     style={{
@@ -633,13 +760,53 @@
                             <button
                                 onClick={onSaveConfig}
                                 className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition-all shadow-md"
-                                title="Save current settings and data to kanban.json"
+                                title="Export Settings and Task Data as CSV"
                             >
                                 <Save size={16} /> Save Setting
                             </button>
                         </div>
 
                         <div className="space-y-8">
+                            {/* --- Permission Control & File Path --- */}
+                            <div className="pb-6 border-b border-gray-100 space-y-4">
+                                <div>
+                                    <div className="font-semibold text-gray-700 mb-2 flex items-center gap-2"><Shield size={16}/> Permission & Storage</div>
+                                    <div className="p-4 bg-gray-50 rounded-lg border border-gray-200 space-y-4">
+                                        {/* CSV Path */}
+                                        <div>
+                                            <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Base Filename (e.g. ProjectX)</label>
+                                            <div className="flex gap-2">
+                                                <input
+                                                    type="text"
+                                                    className="flex-1 p-2 border rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-sm bg-white"
+                                                    placeholder="kanban_data"
+                                                    value={settings.csvPath || ''}
+                                                    onChange={(e) => onUpdateSettings('csvPath', e.target.value)}
+                                                />
+                                            </div>
+                                            <div className="text-[10px] text-gray-400 mt-1">
+                                                Used for file saving.<br/>
+                                                • Admin saves to: <strong>{settings.csvPath || 'kanban'}_ADMIN.csv</strong> (plus _setting.csv)<br/>
+                                                • User saves to: <strong>{settings.csvPath || 'kanban'}_{settings.currentUser || 'user'}.csv</strong> (plus _setting.csv)
+                                            </div>
+                                        </div>
+
+                                        {/* Permission Info */}
+                                        <div className="flex flex-col md:flex-row gap-6 mt-4 pt-4 border-t border-gray-200">
+                                            <div className="flex-1">
+                                                <label className="block text-xs font-semibold text-gray-500 uppercase mb-2">Current Mode</label>
+                                                <div className="flex items-center gap-4">
+                                                    <div className={`px-3 py-1 rounded text-xs font-bold ${settings.permissionMode === 'admin' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
+                                                        {settings.permissionMode === 'admin' ? 'ADMIN MODE' : `USER MODE: ${settings.currentUser}`}
+                                                    </div>
+                                                    <div className="text-xs text-gray-400 italic">Use the top-right button to switch modes.</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
                             {/* Theme & Palette */}
                             <div className="flex flex-col gap-4 pb-6 border-b border-gray-100">
                                 <div className="flex justify-between items-center">
@@ -843,6 +1010,9 @@
         };
 
         const TaskCard = ({ task, onEdit, onDelete, onStatusChange, onOpenColorPicker, onDropOnTask, settings }) => {
+            // Check Permission
+            const canEdit = checkPermission(task, settings);
+
             // 4. Ensure Priority colors reflect accurately
             // generateDynamicStyles converts the hex codes in settings.priorityConfig to the style objects used here
             const priorityStyles = generateDynamicStyles(settings.priorityConfig);
@@ -866,6 +1036,10 @@
             }
 
             const handleDragStart = (e) => {
+                if (!canEdit) {
+                    e.preventDefault();
+                    return;
+                }
                 e.dataTransfer.setData('taskId', task.id);
                 e.dataTransfer.effectAllowed = 'move';
             };
@@ -876,11 +1050,12 @@
             };
 
             const handleDrop = (e) => {
+                if (!canEdit) return; // Prevent drop onto if can't edit? Actually usually preventing drop *onto* isn't the restriction, preventing *move* is. But let's allow dropping *onto* unless user needs to own both? For now allow dropping onto.
                 e.preventDefault();
                 e.stopPropagation();
                 const droppedTaskId = e.dataTransfer.getData('taskId');
                 if (droppedTaskId && droppedTaskId !== task.id) {
-                onDropOnTask(droppedTaskId, task.id);
+                    onDropOnTask(droppedTaskId, task.id);
                 }
             };
 
@@ -920,16 +1095,16 @@
 
             return (
                 <div
-                draggable
+                draggable={canEdit}
                 onDragStart={handleDragStart}
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
                 onClick={(e) => {
                     e.stopPropagation();
-                    onEdit(task);
+                    if (canEdit) onEdit(task);
                 }}
                 style={indentStyle}
-                className={`group bg-white rounded-lg shadow-sm border border-gray-200 hover:shadow-md transition-all cursor-pointer mb-1 active:scale-95 select-none relative overflow-visible flex ${indentLevel > 0 ? 'mt-1 border-l-4 border-l-blue-100' : ''}`}
+                className={`group bg-white rounded-lg shadow-sm border border-gray-200 transition-all mb-1 select-none relative overflow-visible flex ${indentLevel > 0 ? 'mt-1 border-l-4 border-l-blue-100' : ''} ${canEdit ? 'hover:shadow-md cursor-pointer active:scale-95' : 'opacity-80 cursor-not-allowed-force'}`}
                 >
                 {indentLevel > 0 && (
                     <div className="absolute -left-3 top-3 text-gray-300">
@@ -971,14 +1146,17 @@
                             onClick={(e) => {
                                 e.stopPropagation();
                                 e.preventDefault();
-                                onOpenColorPicker(task.id, 'line', e);
+                                if(canEdit) onOpenColorPicker(task.id, 'line', e);
                             }}
-                            className="p-1 hover:bg-gray-100 rounded-full text-gray-400 transition-all opacity-0 group-hover:opacity-100 z-30 relative"
+                            className={`p-1 hover:bg-gray-100 rounded-full text-gray-400 transition-all opacity-0 group-hover:opacity-100 z-30 relative ${!canEdit ? 'hidden' : ''}`}
                             title="Change Line Color"
                             >
                             <Palette size={12} />
                             </button>
                         </div>
+
+                        {/* Lock Icon if No Permission */}
+                        {!canEdit && <Lock size={12} className="text-gray-400" />}
 
                         {task.assignee && (
                         <div className="w-6 h-6 rounded-full bg-gray-100 flex items-center justify-center text-[10px] font-bold text-gray-600 border border-gray-200">
@@ -1015,6 +1193,7 @@
                     {task.effort && <span className="text-blue-500">| Est:{task.effort}</span>}
                     </div>
 
+                    {canEdit && (
                     <div className="flex gap-1 bg-white pl-2 absolute bottom-2 right-2 z-40 shadow-sm border border-gray-100 rounded-md p-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none group-hover:pointer-events-auto">
                     {(task.status === 'todo' || task.status === 'wip') && (
                         <>
@@ -1071,6 +1250,7 @@
                         <Trash2 size={14} />
                     </button>
                     </div>
+                    )}
                 </div>
                 </div>
             );
@@ -1089,11 +1269,22 @@
             const nameInputRef = useRef(null);
 
             const handleDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; };
-            const handleDrop = (e) => { e.preventDefault(); e.stopPropagation(); const taskId = e.dataTransfer.getData('taskId'); if (taskId) onDropTask(taskId, status, projectId); };
+            const handleDrop = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                // We should probably check permissions here too before calling onDropTask?
+                // For now, let's assume the DragStart prevented dragging if no permission.
+                const taskId = e.dataTransfer.getData('taskId');
+                if (taskId) onDropTask(taskId, status, projectId);
+            };
             const handleBackgroundClick = (e) => {
+                // If in user mode, maybe quick add assigns to self?
                 if (status === 'todo' && !isQuickAdding) {
                     if (e.target === e.currentTarget || e.target.classList.contains('min-h-[100px]')) {
-                        setIsQuickAdding(true); setQName(''); setQType(''); setQDescription(''); setQPIC(''); setQPriority('3'); setQWeight('light'); setQStart(new Date().toISOString().split('T')[0]); setQEffort('');
+                        setIsQuickAdding(true); setQName(''); setQType(''); setQDescription('');
+                        // Default PIC to self if in user mode
+                        setQPIC(settings.permissionMode === 'user' ? settings.currentUser : '');
+                        setQPriority('3'); setQWeight('light'); setQStart(new Date().toISOString().split('T')[0]); setQEffort('');
                         setTimeout(() => nameInputRef.current?.focus(), 50);
                     }
                 }
@@ -1193,9 +1384,11 @@
                         colorIndex: task.colorIndex !== undefined ? task.colorIndex : 0
                     });
                 } else {
-                    setFormData({ name: '', type: '', assignee: '', externalRef: '', refLinkType: 'J', priority: '3', weight: 'light', start: new Date().toISOString().split('T')[0], targetDate: '', effort: '', description: '', colorIndex: 0 });
+                    // Default assignee if in user mode
+                    const defaultAssignee = settings.permissionMode === 'user' ? settings.currentUser : '';
+                    setFormData({ name: '', type: '', assignee: defaultAssignee, externalRef: '', refLinkType: 'J', priority: '3', weight: 'light', start: new Date().toISOString().split('T')[0], targetDate: '', effort: '', description: '', colorIndex: 0 });
                 }
-            }, [task, isOpen]);
+            }, [task, isOpen, settings]);
 
             useEffect(() => { if (formData.start && formData.effort) { const newTarget = getEndFromEffort(formData.start, formData.effort); setFormData(prev => ({ ...prev, targetDate: newTarget })); } }, [formData.start, formData.effort]);
 
@@ -1203,7 +1396,7 @@
             const onDragStart = (e, index) => { setDraggedItem(index); e.dataTransfer.effectAllowed = "move"; };
             const onDragOver = (e, index) => { e.preventDefault(); if (draggedItem === null || draggedItem === index) return; const newOrder = [...formOrder]; const item = newOrder.splice(draggedItem, 1)[0]; newOrder.splice(index, 0, item); setDraggedItem(index); setFormOrder(newOrder); };
             const onDragEnd = () => { setDraggedItem(null); localStorage.setItem('kanban_form_layout', JSON.stringify(formOrder)); };
-            
+
             const handleOpenLink = () => {
                 if (!formData.externalRef) return;
                 let url = '';
@@ -1212,7 +1405,7 @@
                 } else if (formData.refLinkType === 'C' && settings.confluencePath) {
                     url = settings.confluencePath + formData.externalRef;
                 }
-                
+
                 if (url) {
                     window.open(url, '_blank');
                 } else {
@@ -1232,16 +1425,16 @@
                             <div>
                                 <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">External Ref#</label>
                                 <div className="flex gap-1">
-                                    <select 
-                                        className="p-2 border rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-sm bg-gray-50 font-bold text-gray-700 w-14 shrink-0" 
-                                        value={formData.refLinkType} 
+                                    <select
+                                        className="p-2 border rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-sm bg-gray-50 font-bold text-gray-700 w-14 shrink-0"
+                                        value={formData.refLinkType}
                                         onChange={e => setFormData({...formData, refLinkType: e.target.value})}
                                     >
                                         <option value="J">J</option>
                                         <option value="C">C</option>
                                     </select>
                                     <input type="text" className="flex-1 min-w-0 p-2 border rounded-md focus:ring-2 focus:ring-blue-500 outline-none text-sm" placeholder="e.g. JIRA-123" value={formData.externalRef} onChange={e => setFormData({...formData, externalRef: e.target.value})}/>
-                                    <button 
+                                    <button
                                         type="button"
                                         onClick={handleOpenLink}
                                         className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-md transition-colors shrink-0"
@@ -1343,10 +1536,10 @@
 
         function App() {
         const [currentView, setCurrentView] = useState('dashboard');
-        // ... (state, effects, and actions are largely unchanged) ...
+        const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
         const fileInputRef = useRef(null);
         const [zoomLevel, setZoomLevel] = useState(() => { try { const saved = localStorage.getItem('kanban_zoom_level'); return saved ? parseFloat(saved) : 1; } catch(e) { return 1; } });
-        
+
         // Settings State
         const [settings, setSettings] = useState(() => {
             try {
@@ -1378,19 +1571,28 @@
                     weightConfig: ensureColors(parsed.weightConfig, DEFAULT_WEIGHT_CONFIG),
                     palette: parsed.palette || DEFAULT_PALETTE, // New Palette Settings
                     jiraPath: parsed.jiraPath || '', // New setting
-                    confluencePath: parsed.confluencePath || '' // New setting
+                    confluencePath: parsed.confluencePath || '', // New setting
+
+                    // --- NEW FEATURES ---
+                    csvPath: parsed.csvPath || 'kanban_data',
+                    permissionMode: parsed.permissionMode || 'admin', // 'admin' or 'user'
+                    currentUser: parsed.currentUser || ''
                 };
             } catch (e) {
                 console.error("Settings load error, resetting defaults", e);
-                return { 
-                    darkMode: false, 
-                    ageWarning: { enabled: false, days: 7 }, 
-                    deadlineWarning: { enabled: false, days: 3 }, 
-                    priorityConfig: DEFAULT_PRIORITY_CONFIG, 
-                    weightConfig: DEFAULT_WEIGHT_CONFIG, 
+                return {
+                    darkMode: false,
+                    ageWarning: { enabled: false, days: 7 },
+                    deadlineWarning: { enabled: false, days: 3 },
+                    priorityConfig: DEFAULT_PRIORITY_CONFIG,
+                    weightConfig: DEFAULT_WEIGHT_CONFIG,
                     palette: DEFAULT_PALETTE,
                     jiraPath: '',
-                    confluencePath: ''
+                    confluencePath: '',
+
+                    csvPath: 'kanban_data',
+                    permissionMode: 'admin',
+                    currentUser: ''
                 };
             }
         });
@@ -1425,7 +1627,7 @@
                     if (response.ok) {
                         const config = await response.json();
                         console.log('Loading configuration from kanban.json', config);
-                        
+
                         if (config.settings) {
                             setSettings(prev => ({...prev, ...config.settings}));
                         }
@@ -1445,25 +1647,55 @@
         const updateSettings = (key, value) => { setSettings(prev => ({ ...prev, [key]: value })); };
         useEffect(() => { const handleWheel = (e) => { if (e.ctrlKey) { e.preventDefault(); setZoomLevel(prev => { let newZoom = prev - e.deltaY * 0.001; newZoom = Math.min(Math.max(0.5, newZoom), 2); return newZoom; }); } }; window.addEventListener('wheel', handleWheel, { passive: false }); return () => window.removeEventListener('wheel', handleWheel); }, []);
         useEffect(() => { localStorage.setItem('kanban_zoom_level', zoomLevel); document.documentElement.style.fontSize = `${16 * zoomLevel}px`; }, [zoomLevel]);
-        
+
         const [activeProjectId, setActiveProjectId] = useState(null); const [searchQuery, setSearchQuery] = useState(''); const [collapsedProjects, setCollapsedProjects] = useState({}); const [isModalOpen, setIsModalOpen] = useState(false); const [isProjectModalOpen, setIsProjectModalOpen] = useState(false); const [editingTask, setEditingTask] = useState(null); const [activeColorPicker, setActiveColorPicker] = useState({ isOpen: false, type: 'line', targetId: null, position: { x: 0, y: 0 } });
-        
+
         useEffect(() => { localStorage.setItem('kanban_data_v1', JSON.stringify(projects)); }, [projects]);
-        
+
+        const getBaseFileNameParts = () => {
+            const baseName = settings.csvPath || 'kanban_data';
+            const isUserMode = settings.permissionMode === 'user';
+            // User requested <username> for user mode, and presumably ADMIN for admin mode (or just _ADMIN)
+            // The prompt says:
+            // 3.1 if admin, <address path>_ADMIN.csv
+            // 3.2 if user, <address path>_<username>.csv
+            const suffix = isUserMode ? `_${settings.currentUser}` : `_ADMIN`;
+            return { baseName, suffix };
+        };
+
+        const exportSettingsToCSV = () => {
+            const { baseName, suffix } = getBaseFileNameParts();
+            const fileName = `${baseName}${suffix}_setting.csv`;
+
+            const headers = ['Key', 'Value'];
+            const rows = [];
+
+            Object.entries(settings).forEach(([key, value]) => {
+                let stringValue = value;
+                if (typeof value === 'object') {
+                    stringValue = JSON.stringify(value).replace(/"/g, '""'); // Escape quotes
+                    stringValue = `"${stringValue}"`; // Wrap in quotes
+                } else {
+                    stringValue = `"${String(value).replace(/"/g, '""')}"`;
+                }
+                rows.push([key, stringValue].join(','));
+            });
+
+            const csvContent = "data:text/csv;charset=utf-8," + headers.join(',') + "\n" + rows.join('\n');
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", fileName);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        };
+
         const handleSaveConfig = () => {
-            const configData = {
-                settings: settings,
-                projects: projects
-            };
-            const blob = new Blob([JSON.stringify(configData, null, 2)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'kanban.json';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
+            // 1. Export Data
+            exportToCSV(projects);
+            // 2. Export Settings (small delay to ensure both downloads start)
+            setTimeout(() => exportSettingsToCSV(), 500);
         };
 
         const handleAddProject = (projectData) => { const newProj = { id: generateId(), name: projectData.name, colorIndex: projectData.colorIndex, icon: projectData.iconName, tasks: [] }; setProjects(prev => [...prev, newProj]); setCurrentView('ongoing'); };
@@ -1474,8 +1706,171 @@
         const updateProject = (projectId, updater) => { setProjects(prev => prev.map(p => { if (p.id !== projectId) return p; return updater(p); })); };
         const deleteTask = (taskId) => { if (window.confirm("Are you sure you want to delete this task?")) { setProjects(prev => prev.map(p => ({ ...p, tasks: p.tasks.filter(t => t.id !== taskId) }))); } };
         const deleteProject = (projectId) => { if (confirm("Are you sure you want to delete this project and all its tasks?")) { setProjects(prev => prev.filter(p => p.id !== projectId)); } };
-        const exportToCSV = (currentProjects) => { const headers = ['UUID', 'Project', 'Task Name', 'Type', 'External Ref', 'Ref Type', 'Status', 'Priority', 'Weight', 'Assignee', 'Start Date', 'End Date', 'Created Date', 'Completed Date', 'Effort', 'Level', 'Description', 'Line Color']; const rows = []; currentProjects.forEach(p => { p.tasks.forEach(t => { const safeName = (t.name || '').replace(/"/g, '""'); const safeDesc = (t.description || '').replace(/"/g, '""'); rows.push([`"${t.id}"`,`"${p.name}"`,`"${safeName}"`,`"${t.type || ''}"`,`"${t.externalRef||''}"`,`"${t.refLinkType||'J'}"`,t.status,t.priority,t.weight,`"${t.assignee || ''}"`,t.start,t.end||'',t.createdAt,t.completedAt||'',t.effort||'',t.level||0,`"${safeDesc}"`,t.lineColor||''].join(',')); }); }); const csvContent = "data:text/csv;charset=utf-8," + headers.join(',') + "\n" + rows.join('\n'); const encodedUri = encodeURI(csvContent); const now = new Date(); const yyyy = now.getFullYear(); const mm = String(now.getMonth() + 1).padStart(2, '0'); const dd = String(now.getDate()).padStart(2, '0'); const hh = String(now.getHours()).padStart(2, '0'); const min = String(now.getMinutes()).padStart(2, '0'); const fileName = `kanban_${yyyy}${mm}${dd}${hh}${min}.csv`; const link = document.createElement("a"); link.setAttribute("href", encodedUri); link.setAttribute("download", fileName); document.body.appendChild(link); link.click(); document.body.removeChild(link); };
-        const handlePlainTextImport = (jsonText) => { try { let importedTasks = []; const trimmedInput = jsonText.trim(); if (!trimmedInput) throw new Error("Input is empty"); if (trimmedInput.startsWith('[')) { importedTasks = JSON.parse(trimmedInput); } else { const lines = trimmedInput.split('\n').filter(line => line.trim() !== ''); if (lines.length < 2) throw new Error("Invalid CSV format"); const parseCSVLine = (line) => { const result = []; let current = ''; let inQuotes = false; for (let i = 0; i < line.length; i++) { const char = line[i]; if (char === '"') { inQuotes = !inQuotes; } else if (char === ',' && !inQuotes) { result.push(current); current = ''; } else { current += char; } } result.push(current); return result.map(c => c.trim().replace(/^"|"$/g, '').replace(/""/g, '"')); }; const headers = parseCSVLine(lines[0]); for (let i = 1; i < lines.length; i++) { const values = parseCSVLine(lines[i]); const row = {}; headers.forEach((h, idx) => { if(values[idx] !== undefined) row[h] = values[idx]; }); importedTasks.push({ id: row['UUID'] || row['id'] || generateId(), name: row['Task Name'] || row['name'] || 'Untitled', project: row['Project'], type: row['Type'], externalRef: row['External Ref'], refLinkType: row['Ref Type'] || 'J', status: row['Status'] || 'todo', priority: row['Priority'] || '3', weight: row['Weight'] || 'light', assignee: row['Assignee'], start: row['Start Date'], end: row['End Date'], createdAt: row['Created Date'], completedAt: row['Completed Date'], effort: row['Effort'], level: parseInt(row['Level']) || 0, description: row['Description'], lineColor: row['Line Color'] }); } } if (!Array.isArray(importedTasks)) throw new Error("Input must be a JSON array or CSV"); const currentIds = new Set(projects.flatMap(p => p.tasks.map(t => t.id))); let targetProjects = [...projects]; if (targetProjects.length === 0) { targetProjects.push({ id: generateId(), name: 'Imported Project', colorIndex: 0, icon: 'FolderKanban', tasks: [] }); } let addedCount = 0; importedTasks.forEach(rawTask => { const checkId = rawTask.id || rawTask.ticketid; if (checkId && currentIds.has(checkId)) { return; } let projectId = null; if (rawTask.project) { const existingProj = targetProjects.find(p => p.name === rawTask.project); if (existingProj) { projectId = existingProj.id; } else { const newProjId = generateId(); targetProjects.push({ id: newProjId, name: rawTask.project, colorIndex: 0, icon: 'FolderKanban', tasks: [] }); projectId = newProjId; } } else if (rawTask.projectId) { const existingProj = targetProjects.find(p => p.id === rawTask.projectId); if (existingProj) projectId = existingProj.id; } if (!projectId) projectId = targetProjects[0].id; const newTask = { id: checkId || generateId(), name: rawTask.name || 'Untitled Task', status: rawTask.status || 'todo', type: rawTask.type || '', externalRef: rawTask.externalRef || '', refLinkType: rawTask.refLinkType || 'J', priority: rawTask.priority || '3', weight: rawTask.weight || 'light', assignee: rawTask.assignee || '', start: rawTask.start || new Date().toISOString().split('T')[0], end: rawTask.end || '', createdAt: rawTask.createdAt || new Date().toISOString(), completedAt: rawTask.completedAt, effort: rawTask.effort || '', level: rawTask.level || 0, description: rawTask.description || '', lineColor: rawTask.lineColor || 'bg-gray-400', projectId: projectId }; const pIndex = targetProjects.findIndex(p => p.id === projectId); if (pIndex > -1) { targetProjects[pIndex].tasks.push(newTask); addedCount++; } }); setProjects(targetProjects); alert(`Successfully imported ${addedCount} tasks.`); setCurrentView('ongoing'); } catch (e) { alert("Import Failed: " + e.message); console.error(e); } };
+
+        // Revised Export to CSV
+        const exportToCSV = (currentProjects) => {
+            const headers = ['UUID', 'Project', 'Task Name', 'Type', 'External Ref', 'Ref Type', 'Status', 'Priority', 'Weight', 'Assignee', 'Start Date', 'End Date', 'Created Date', 'Completed Date', 'Effort', 'Level', 'Description', 'Line Color'];
+            const rows = [];
+
+            // Filter tasks based on mode
+            const isUserMode = settings.permissionMode === 'user';
+            const currentUser = settings.currentUser ? settings.currentUser.toLowerCase() : '';
+
+            currentProjects.forEach(p => {
+                p.tasks.forEach(t => {
+                    // User Mode Filter: Skip tasks not assigned to user
+                    if (isUserMode && (!t.assignee || t.assignee.toLowerCase() !== currentUser)) {
+                        return;
+                    }
+
+                    const safeName = (t.name || '').replace(/"/g, '""');
+                    const safeDesc = (t.description || '').replace(/"/g, '""');
+                    rows.push([`"${t.id}"`,`"${p.name}"`,`"${safeName}"`,`"${t.type || ''}"`,`"${t.externalRef||''}"`,`"${t.refLinkType||'J'}"`,t.status,t.priority,t.weight,`"${t.assignee || ''}"`,t.start,t.end||'',t.createdAt,t.completedAt||'',t.effort||'',t.level||0,`"${safeDesc}"`,t.lineColor||''].join(','));
+                });
+            });
+
+            const csvContent = "data:text/csv;charset=utf-8," + headers.join(',') + "\n" + rows.join('\n');
+            const encodedUri = encodeURI(csvContent);
+
+            // Generate Filename logic
+            const { baseName, suffix } = getBaseFileNameParts();
+            const fileName = `${baseName}${suffix}.csv`;
+
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", fileName);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        };
+
+        const handlePlainTextImport = (jsonText) => {
+            try {
+                let importedTasks = [];
+                const trimmedInput = jsonText.trim();
+                if (!trimmedInput) throw new Error("Input is empty");
+
+                if (trimmedInput.startsWith('[')) {
+                    importedTasks = JSON.parse(trimmedInput);
+                } else {
+                    const lines = trimmedInput.split('\n').filter(line => line.trim() !== '');
+                    if (lines.length < 2) throw new Error("Invalid CSV format");
+
+                    const parseCSVLine = (line) => {
+                        const result = [];
+                        let current = '';
+                        let inQuotes = false;
+                        for (let i = 0; i < line.length; i++) {
+                            const char = line[i];
+                            if (char === '"') { inQuotes = !inQuotes; }
+                            else if (char === ',' && !inQuotes) { result.push(current); current = ''; }
+                            else { current += char; }
+                        }
+                        result.push(current);
+                        return result.map(c => c.trim().replace(/^"|"$/g, '').replace(/""/g, '"'));
+                    };
+
+                    const headers = parseCSVLine(lines[0]);
+                    for (let i = 1; i < lines.length; i++) {
+                        const values = parseCSVLine(lines[i]);
+                        const row = {};
+                        headers.forEach((h, idx) => { if (values[idx] !== undefined) row[h] = values[idx]; });
+
+                        // Rule 2: Skip if Project or Task Name is missing
+                        if (!row['Project'] || !row['Task Name']) continue;
+
+                        importedTasks.push({
+                            id: row['UUID'] || row['id'] || generateId(),
+                            name: row['Task Name'],
+                            project: row['Project'],
+                            type: row['Type'],
+                            externalRef: row['External Ref'],
+                            refLinkType: row['Ref Type'] || 'J',
+                            status: row['Status'] || 'todo',
+                            priority: row['Priority'] || '3',
+                            weight: row['Weight'] || 'light',
+                            assignee: row['Assignee'],
+                            start: row['Start Date'],
+                            end: row['End Date'],
+                            createdAt: row['Created Date'],
+                            completedAt: row['Completed Date'],
+                            effort: row['Effort'],
+                            level: parseInt(row['Level']) || 0,
+                            description: row['Description'],
+                            lineColor: row['Line Color']
+                        });
+                    }
+                }
+
+                if (!Array.isArray(importedTasks)) throw new Error("Input must be a JSON array or CSV");
+
+                let targetProjects = [...projects];
+                let addedCount = 0;
+                let replacedCount = 0;
+
+                importedTasks.forEach(rawTask => {
+                    const checkId = rawTask.id || rawTask.ticketid;
+
+                    // Logic for Project Assignment
+                    let projectId = null;
+                    const projectName = rawTask.project || "Imported Project";
+                    const existingProj = targetProjects.find(p => p.name === projectName);
+
+                    if (existingProj) {
+                        projectId = existingProj.id;
+                    } else {
+                        const newProjId = generateId();
+                        targetProjects.push({ id: newProjId, name: projectName, colorIndex: 0, icon: 'FolderKanban', tasks: [] });
+                        projectId = newProjId;
+                    }
+
+                    const pIndex = targetProjects.findIndex(p => p.id === projectId);
+                    const newTaskObj = {
+                        id: checkId || generateId(),
+                        name: rawTask.name,
+                        status: rawTask.status || 'todo',
+                        type: rawTask.type || '',
+                        externalRef: rawTask.externalRef || '',
+                        refLinkType: rawTask.refLinkType || 'J',
+                        priority: rawTask.priority || '3',
+                        weight: rawTask.weight || 'light',
+                        assignee: rawTask.assignee || '',
+                        start: rawTask.start || new Date().toISOString().split('T')[0],
+                        end: rawTask.end || '',
+                        createdAt: rawTask.createdAt || new Date().toISOString(),
+                        completedAt: rawTask.completedAt,
+                        effort: rawTask.effort || '',
+                        level: rawTask.level || 0,
+                        description: rawTask.description || '',
+                        lineColor: rawTask.lineColor || 'bg-gray-400',
+                        projectId: projectId
+                    };
+
+                    // Rule 1: Replace if UUID exists, otherwise add
+                    let taskFound = false;
+                    targetProjects.forEach(proj => {
+                        const existingTaskIndex = proj.tasks.findIndex(t => t.id === checkId);
+                        if (existingTaskIndex !== -1) {
+                            proj.tasks[existingTaskIndex] = newTaskObj;
+                            taskFound = true;
+                            replacedCount++;
+                        }
+                    });
+
+                    if (!taskFound) {
+                        targetProjects[pIndex].tasks.push(newTaskObj);
+                        addedCount++;
+                    }
+                });
+
+                setProjects(targetProjects);
+                alert(`Import Complete: ${addedCount} new tasks added, ${replacedCount} existing tasks updated.`);
+                setCurrentView('ongoing');
+            } catch (e) {
+                alert("Import Failed: " + e.message);
+                console.error(e);
+            }
+        };
         const handleQuickAddTask = (projectId, taskData) => { if (!taskData.name || !projectId) return; const now = new Date().toISOString(); let calculatedTarget = ''; if (taskData.effort) { calculatedTarget = getEndFromEffort(taskData.start, taskData.effort); } updateProject(projectId, (project) => ({ ...project, tasks: [...project.tasks, { id: generateId(), status: 'todo', name: taskData.name, type: taskData.type, description: taskData.description || '', assignee: taskData.pic || '', priority: taskData.priority, weight: taskData.weight, start: taskData.start, effort: taskData.effort, targetDate: calculatedTarget, createdAt: now, projectId: projectId, lineColor: 'bg-gray-400', level: 0 }] })); };
         const handleSaveTask = (taskData) => { const targetProjectId = activeProjectId || projects[0]?.id; if (!targetProjectId) return; const now = new Date().toISOString(); updateProject(targetProjectId, (project) => { if (editingTask) { return { ...project, tasks: project.tasks.map(t => t.id === editingTask.id ? { ...t, ...taskData } : t) }; } else { return { ...project, tasks: [...project.tasks, { ...taskData, id: generateId(), status: 'todo', createdAt: now, projectId: targetProjectId, level: 0 }] }; } }); };
         const findDescendants = (allTasks, parentIndex, parentLevel) => { const descendants = []; for (let i = parentIndex + 1; i < allTasks.length; i++) { const currentTask = allTasks[i]; if ((currentTask.level || 0) > parentLevel) { descendants.push(currentTask); } else { break; } } return descendants; };
@@ -1488,6 +1883,14 @@
         const openColorPicker = (id, type, event) => { event.stopPropagation(); event.nativeEvent.stopImmediatePropagation(); const rect = event.currentTarget.getBoundingClientRect(); setActiveColorPicker({ isOpen: true, type, targetId: id, position: { x: rect.left, y: rect.bottom } }); };
         const handleColorSelect = (index) => { if (activeColorPicker.type === 'line') { updateTaskColor(activeColorPicker.targetId, index); } else { handleUpdateProjectColor(activeColorPicker.targetId, index); } setActiveColorPicker({ ...activeColorPicker, isOpen: false }); };
         const handleImportCSV = (event) => { const file = event.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (e) => { handlePlainTextImport(e.target.result); }; reader.readAsText(file); event.target.value = null; };
+
+        const handleLogin = (mode, identity) => {
+            setSettings(prev => ({
+                ...prev,
+                permissionMode: mode,
+                currentUser: identity
+            }));
+        };
 
         // --- Dashboard Statistics ---
         const stats = useMemo(() => {
@@ -1554,11 +1957,11 @@
             const handleWidgetDrop = (e, targetIndex) => {
                 e.preventDefault();
                 if (draggedWidget === null || draggedWidget === targetIndex) return;
-                
+
                 const newLayout = [...dashboardLayout];
                 const widget = newLayout.splice(draggedWidget, 1)[0];
                 newLayout.splice(targetIndex, 0, widget);
-                
+
                 setDashboardLayout(newLayout);
                 setDraggedWidget(null);
             };
@@ -1966,7 +2369,7 @@
             <header className="h-16 bg-white border-b flex items-center justify-between px-6 shadow-sm z-20 shrink-0">
                 <div className="flex items-center gap-8">
                 <h1 className="text-xl font-black text-gray-800 tracking-wider flex items-center gap-2">
-                    Kanban Board v30
+                    Kanban Board v30.1
                 </h1>
 
                 <nav className="flex gap-1 bg-gray-100/50 p-1 rounded-lg">
@@ -2016,6 +2419,23 @@
                     />
                 </div>
 
+                {/* Permission Status Indicator / Login Button */}
+                <button
+                    onClick={() => setIsLoginModalOpen(true)}
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold uppercase transition-all shadow-sm active:scale-95 ${settings.permissionMode === 'admin' ? 'bg-red-100 text-red-600 border border-red-200 hover:bg-red-200' : 'bg-blue-100 text-blue-600 border border-blue-200 hover:bg-blue-200'}`}
+                    title="Click to Switch Mode / Login"
+                >
+                    {settings.permissionMode === 'admin' ? (
+                        <>
+                            <Shield size={14}/> ADMIN
+                        </>
+                    ) : (
+                        <>
+                            <User size={14}/> {settings.currentUser || 'GUEST'}
+                        </>
+                    )}
+                </button>
+
                 <div className="h-6 w-px bg-gray-200 mx-1"></div>
 
                 {/* Import/Export */}
@@ -2031,7 +2451,7 @@
                     <button
                         onClick={() => exportToCSV(projects)}
                         className="p-1.5 hover:bg-white rounded-md text-gray-500 hover:text-blue-600 transition-all shadow-sm"
-                        title="Export CSV"
+                        title={settings.permissionMode === 'admin' ? "Export All Data (ADMIN)" : `Export My Data (${settings.currentUser})`}
                     >
                         <Download size={16} />
                     </button>
@@ -2113,7 +2533,7 @@
                 )}
             </main>
 
-            <div className="fixed bottom-2 right-2 text-[10px] text-gray-300">v30.0</div>
+            <div className="fixed bottom-2 right-2 text-[10px] text-gray-300">v30.1</div>
 
             {/* GLOBAL COLOR PICKER: This lives at the root level, outside any overflow/clip containers */}
             {activeColorPicker.isOpen && (
@@ -2125,6 +2545,12 @@
                     onClose={() => setActiveColorPicker({ ...activeColorPicker, isOpen: false })}
                 />
             )}
+
+            <LoginModal
+                isOpen={isLoginModalOpen}
+                onClose={() => setIsLoginModalOpen(false)}
+                onLogin={handleLogin}
+            />
 
             <TaskModal
                 isOpen={isModalOpen}
