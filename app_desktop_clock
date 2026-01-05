@@ -1,0 +1,357 @@
+import tkinter as tk
+from tkinter import font
+from datetime import datetime
+import platform
+import json
+import os
+
+
+class ModernClockWidget:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.settings_file = "clock_settings.json"
+
+        # --- Load Settings ---
+        self.settings = self.load_settings()
+
+        # --- Variables (Load from settings or use defaults) ---
+        self.current_theme = tk.StringVar(value=self.settings.get("theme", "Nord (Ice)"))
+        self.alpha_value = tk.DoubleVar(value=self.settings.get("transparency", 1.0))
+        self.is_topmost = tk.BooleanVar(value=self.settings.get("topmost", True))
+        self.show_ms = tk.BooleanVar(value=self.settings.get("show_ms", True))
+        self.format_mode = tk.IntVar(value=self.settings.get("format", 0))
+
+        # Independent Sizes
+        self.date_size_mode = tk.StringVar(value=self.settings.get("date_size", "Medium (16px)"))
+        self.time_size_mode = tk.StringVar(value=self.settings.get("time_size", "Medium (16px)"))
+
+        # Font handling
+        system = platform.system()
+        default_font = "Segoe UI" if system == "Windows" else "Helvetica"
+        self.font_family_var = tk.StringVar(value=self.settings.get("font_family", default_font))
+
+        # Size mapping
+        self.size_map = {"Small (12px)": 12, "Medium (16px)": 16, "Large (24px)": 24, "Largest (32px)": 32}
+
+        # Create dynamic font objects
+        self.date_font = font.Font(
+            family=self.font_family_var.get(),
+            size=self.size_map.get(self.date_size_mode.get(), 18),
+            weight="bold"
+        )
+        self.time_font = font.Font(
+            family=self.font_family_var.get(),
+            size=self.size_map.get(self.time_size_mode.get(), 18),
+            weight="bold"
+        )
+
+        # --- Theme Definitions ---
+        self.themes = {
+            "Nord (Ice)": {"bg": "#2e3440", "fg": "#88c0d0"},
+            "Dracula": {"bg": "#282a36", "fg": "#ff79c6"},
+            "Clean Light": {"bg": "#ffffff", "fg": "#333333"},
+            "Matrix": {"bg": "#000000", "fg": "#00ff00"},
+            "Midnight": {"bg": "#101010", "fg": "#ffffff"},
+            # New Themes
+            "Cyberpunk": {"bg": "#212121", "fg": "#fce94f"},  # Dark grey / Yellow
+            "Forest": {"bg": "#0f2b1d", "fg": "#50fa7b"},  # Dark Green / Mint
+            "Ocean": {"bg": "#002b36", "fg": "#2aa198"},  # Deep Blue / Teal
+            "Sunset": {"bg": "#2d1b2e", "fg": "#ff9e64"},  # Deep Purple / Orange
+            "Retro": {"bg": "#fdf6e3", "fg": "#b58900"},  # Solarized Light
+        }
+
+        # --- Window Setup ---
+        self.root.title("Modern Clock")
+        self.root.overrideredirect(True)
+
+        # Apply initial window settings
+        self.root.attributes('-alpha', self.alpha_value.get())
+        self.root.attributes('-topmost', self.is_topmost.get())
+
+        # --- Layout ---
+        # Split into two labels for independent sizing
+        self.date_label = tk.Label(
+            self.root,
+            text="Date",
+            font=self.date_font,
+            padx=20,
+            pady=0,
+            justify="center"
+        )
+        self.date_label.pack(pady=(10, 0))  # Padding top
+
+        self.time_label = tk.Label(
+            self.root,
+            text="Time",
+            font=self.time_font,
+            padx=20,
+            pady=0,
+            justify="center"
+        )
+        self.time_label.pack(pady=(0, 10))  # Padding bottom
+
+        # --- Context Menu Construction ---
+        self.context_menu = tk.Menu(self.root, tearoff=0)
+
+        # 1. Stay on top
+        self.context_menu.add_checkbutton(
+            label="Stay on top",
+            variable=self.is_topmost,
+            command=self.toggle_topmost
+        )
+
+        # 2. Show Milliseconds
+        self.context_menu.add_checkbutton(
+            label="Show Milliseconds",
+            variable=self.show_ms
+        )
+
+        self.context_menu.add_separator()
+
+        # 3. Size Menu (Nested)
+        self.size_menu = tk.Menu(self.context_menu, tearoff=0)
+        self.context_menu.add_cascade(label="Size", menu=self.size_menu)
+
+        # Date Size Submenu
+        self.date_size_menu = tk.Menu(self.size_menu, tearoff=0)
+        self.size_menu.add_cascade(label="Date Size", menu=self.date_size_menu)
+        for label in ["Small (12px)", "Medium (16px)", "Large (24px)", "Largest (32px)"]:
+            self.date_size_menu.add_radiobutton(
+                label=label,
+                variable=self.date_size_mode,
+                value=label,
+                command=lambda: self.update_font_appearance("date")
+            )
+
+        # Time Size Submenu
+        self.time_size_menu = tk.Menu(self.size_menu, tearoff=0)
+        self.size_menu.add_cascade(label="Time Size", menu=self.time_size_menu)
+        for label in ["Small (12px)", "Medium (16px)", "Large (24px)", "Largest (32px)"]:
+            self.time_size_menu.add_radiobutton(
+                label=label,
+                variable=self.time_size_mode,
+                value=label,
+                command=lambda: self.update_font_appearance("time")
+            )
+
+        # 4. Font Type Menu
+        self.font_menu = tk.Menu(self.context_menu, tearoff=0)
+        self.context_menu.add_cascade(label="Font Type", menu=self.font_menu)
+
+        available_fonts = ["Segoe UI", "Helvetica", "Arial", "Verdana", "Times New Roman", "Consolas", "Courier New",
+                           "Comic Sans MS"]
+        for f in available_fonts:
+            self.font_menu.add_radiobutton(
+                label=f,
+                variable=self.font_family_var,
+                value=f,
+                command=lambda: self.update_font_appearance("both")
+            )
+
+        # 5. Format Menu
+        self.format_menu = tk.Menu(self.context_menu, tearoff=0)
+        self.context_menu.add_cascade(label="Format", menu=self.format_menu)
+        formats = [("Default (Ordinal)", 0), ("ISO (YYYY-MM-DD)", 1), ("12-Hour (AM/PM)", 2)]
+        for label, val in formats:
+            self.format_menu.add_radiobutton(label=label, variable=self.format_mode, value=val)
+
+        # 6. Theme Menu
+        self.theme_menu = tk.Menu(self.context_menu, tearoff=0)
+        self.context_menu.add_cascade(label="Theme", menu=self.theme_menu)
+        for theme_name in self.themes:
+            self.theme_menu.add_radiobutton(
+                label=theme_name,
+                variable=self.current_theme,
+                value=theme_name,
+                command=self.apply_theme
+            )
+
+        # 7. Transparency Menu
+        self.alpha_menu = tk.Menu(self.context_menu, tearoff=0)
+        self.context_menu.add_cascade(label="Transparency", menu=self.alpha_menu)
+
+        opacity_levels = [("25% (Ghost)", 0.25), ("50%", 0.50), ("75%", 0.75), ("100% (Solid)", 1.0)]
+        for label, val in opacity_levels:
+            self.alpha_menu.add_radiobutton(
+                label=label,
+                variable=self.alpha_value,
+                value=val,
+                command=self.apply_transparency
+            )
+
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="Close", command=self.close_app)
+
+        # --- Mouse Bindings ---
+        # Bind events to all widgets so dragging works anywhere
+        for widget in [self.root, self.date_label, self.time_label]:
+            widget.bind('<Button-1>', self.start_move)
+            widget.bind('<B1-Motion>', self.do_move)
+            widget.bind('<Button-3>', self.show_context_menu)
+
+        # --- Initialize ---
+        self.apply_theme()
+        self.update_clock()
+
+        # Restore position or center
+        if "x" in self.settings and "y" in self.settings:
+            self.root.geometry(f"+{self.settings['x']}+{self.settings['y']}")
+        else:
+            self.center_window()
+
+        self.root.mainloop()
+
+    # --- Persistence Methods ---
+    def load_settings(self):
+        if os.path.exists(self.settings_file):
+            try:
+                with open(self.settings_file, 'r') as f:
+                    return json.load(f)
+            except:
+                pass
+        return {}
+
+    def save_settings(self):
+        settings = {
+            "theme": self.current_theme.get(),
+            "transparency": self.alpha_value.get(),
+            "topmost": self.is_topmost.get(),
+            "show_ms": self.show_ms.get(),
+            "format": self.format_mode.get(),
+            "date_size": self.date_size_mode.get(),
+            "time_size": self.time_size_mode.get(),
+            "font_family": self.font_family_var.get(),
+            "x": self.root.winfo_x(),
+            "y": self.root.winfo_y()
+        }
+        try:
+            with open(self.settings_file, 'w') as f:
+                json.dump(settings, f)
+        except:
+            pass
+
+    # --- Logic Methods ---
+    def apply_transparency(self):
+        """Updates window opacity based on selection."""
+        self.root.attributes('-alpha', self.alpha_value.get())
+
+    def apply_theme(self):
+        theme = self.themes[self.current_theme.get()]
+        bg = theme["bg"]
+        fg = theme["fg"]
+        self.root.configure(bg=bg)
+        self.date_label.configure(bg=bg, fg=fg)
+        self.time_label.configure(bg=bg, fg=fg)
+
+    def update_font_appearance(self, target="both"):
+        """Updates font family and sizes dynamically."""
+        family = self.font_family_var.get()
+
+        if target == "date" or target == "both":
+            d_size = self.size_map.get(self.date_size_mode.get(), 18)
+            self.date_font.configure(family=family, size=d_size)
+
+        if target == "time" or target == "both":
+            t_size = self.size_map.get(self.time_size_mode.get(), 18)
+            self.time_font.configure(family=family, size=t_size)
+
+    def get_ordinal_date(self, dt):
+        day = dt.day
+        if 11 <= (day % 100) <= 13:
+            suffix = 'th'
+        else:
+            suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+        return f"{day}{suffix}"
+
+    def update_clock(self):
+        try:
+            now = datetime.now()
+            mode = self.format_mode.get()
+            show_ms = self.show_ms.get()
+
+            # 3 digits (divided by 1000)
+            ms_digit = str(now.microsecond // 1000).zfill(3)
+
+            if mode == 0:
+                # Default
+                day_str = self.get_ordinal_date(now)
+                day_date = now.strftime("%a")
+                month_str = now.strftime("%b")
+                year_str = now.strftime("%Y")
+                date_line = f"{day_date}, {day_str} {month_str} {year_str}"
+
+                time_line = now.strftime("%H:%M:%S")
+                if show_ms: time_line += f":{ms_digit}"
+
+            elif mode == 1:
+                # ISO
+                date_line = now.strftime("%Y-%m-%d")
+                time_line = now.strftime("%H:%M:%S")
+                if show_ms: time_line += f".{ms_digit}"
+
+            elif mode == 2:
+                # 12-Hour
+                date_line = now.strftime("%a, %b %d %Y")
+                time_part = now.strftime("%I:%M:%S")
+                ampm_part = now.strftime("%p")
+
+                if show_ms:
+                    time_line = f"{time_part}.{ms_digit} {ampm_part}"
+                else:
+                    time_line = f"{time_part} {ampm_part}"
+
+            self.date_label.config(text=date_line)
+            self.time_label.config(text=time_line)
+
+            # Faster update rate for 3-digit smoothness
+            self.after_id = self.root.after(10, self.update_clock)
+        except (tk.TclError, RuntimeError):
+            # Widget destroyed
+            pass
+
+    def toggle_topmost(self):
+        self.root.attributes('-topmost', self.is_topmost.get())
+
+    def show_context_menu(self, event):
+        # Using tk_popup fixes the flashing issue on Windows
+        try:
+            self.context_menu.tk_popup(event.x_root, event.y_root)
+        except tk.TclError:
+            # Application destroyed while menu was trying to open
+            pass
+        finally:
+            try:
+                self.context_menu.grab_release()
+            except tk.TclError:
+                pass
+
+    def start_move(self, event):
+        self.x = event.x
+        self.y = event.y
+
+    def do_move(self, event):
+        deltax = event.x - self.x
+        deltay = event.y - self.y
+        x = self.root.winfo_x() + deltax
+        y = self.root.winfo_y() + deltay
+        self.root.geometry(f"+{x}+{y}")
+
+    def close_app(self):
+        self.save_settings()  # Save on close
+        if hasattr(self, 'after_id'):
+            self.root.after_cancel(self.after_id)
+        self.root.destroy()
+
+    def center_window(self):
+        self.root.update_idletasks()
+        w = self.root.winfo_width()
+        h = self.root.winfo_height()
+        ws = self.root.winfo_screenwidth()
+        hs = self.root.winfo_screenheight()
+        x = (ws // 2) - (w // 2)
+        y = (hs // 2) - (h // 2)
+        self.root.geometry(f'+{x}+{y}')
+
+
+if __name__ == "__main__":
+    ModernClockWidget()
