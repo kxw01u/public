@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import font
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import platform
 import json
 import os
@@ -20,10 +20,13 @@ class ModernClockWidget:
         self.is_topmost = tk.BooleanVar(value=self.settings.get("topmost", True))
         self.show_ms = tk.BooleanVar(value=self.settings.get("show_ms", True))
         self.format_mode = tk.IntVar(value=self.settings.get("format", 0))
+        self.show_world_clock = tk.BooleanVar(value=self.settings.get("show_world_clock", False))
+        self.is_dst = tk.BooleanVar(value=self.settings.get("is_dst", False))  # Default to Winter/Standard
 
         # Independent Sizes
         self.date_size_mode = tk.StringVar(value=self.settings.get("date_size", "Medium (16px)"))
         self.time_size_mode = tk.StringVar(value=self.settings.get("time_size", "Medium (16px)"))
+        self.world_clock_size_mode = tk.StringVar(value=self.settings.get("world_clock_size", "Small (12px)"))
 
         # Font handling
         system = platform.system()
@@ -31,7 +34,8 @@ class ModernClockWidget:
         self.font_family_var = tk.StringVar(value=self.settings.get("font_family", default_font))
 
         # Size mapping
-        self.size_map = {"Small (12px)": 12, "Medium (16px)": 16, "Large (24px)": 24, "Largest (32px)": 32}
+        self.size_map = {"Tiny (8px)": 8, "Small (12px)": 12, "Medium (16px)": 16, "Large (24px)": 24,
+                         "Largest (32px)": 32}
 
         # Create dynamic font objects
         self.date_font = font.Font(
@@ -44,6 +48,11 @@ class ModernClockWidget:
             size=self.size_map.get(self.time_size_mode.get(), 18),
             weight="bold"
         )
+        self.world_clock_font = font.Font(
+            family=self.font_family_var.get(),
+            size=self.size_map.get(self.world_clock_size_mode.get(), 12),
+            weight="bold"
+        )
 
         # --- Theme Definitions ---
         self.themes = {
@@ -52,12 +61,11 @@ class ModernClockWidget:
             "Clean Light": {"bg": "#ffffff", "fg": "#333333"},
             "Matrix": {"bg": "#000000", "fg": "#00ff00"},
             "Midnight": {"bg": "#101010", "fg": "#ffffff"},
-            # New Themes
-            "Cyberpunk": {"bg": "#212121", "fg": "#fce94f"},  # Dark grey / Yellow
-            "Forest": {"bg": "#0f2b1d", "fg": "#50fa7b"},  # Dark Green / Mint
-            "Ocean": {"bg": "#002b36", "fg": "#2aa198"},  # Deep Blue / Teal
-            "Sunset": {"bg": "#2d1b2e", "fg": "#ff9e64"},  # Deep Purple / Orange
-            "Retro": {"bg": "#fdf6e3", "fg": "#b58900"},  # Solarized Light
+            "Cyberpunk": {"bg": "#212121", "fg": "#fce94f"},
+            "Forest": {"bg": "#0f2b1d", "fg": "#50fa7b"},
+            "Ocean": {"bg": "#002b36", "fg": "#2aa198"},
+            "Sunset": {"bg": "#2d1b2e", "fg": "#ff9e64"},
+            "Retro": {"bg": "#fdf6e3", "fg": "#b58900"},
         }
 
         # --- Window Setup ---
@@ -69,7 +77,6 @@ class ModernClockWidget:
         self.root.attributes('-topmost', self.is_topmost.get())
 
         # --- Layout ---
-        # Split into two labels for independent sizing
         self.date_label = tk.Label(
             self.root,
             text="Date",
@@ -78,7 +85,7 @@ class ModernClockWidget:
             pady=0,
             justify="center"
         )
-        self.date_label.pack(pady=(10, 0))  # Padding top
+        self.date_label.pack(pady=(10, 0))
 
         self.time_label = tk.Label(
             self.root,
@@ -88,7 +95,20 @@ class ModernClockWidget:
             pady=0,
             justify="center"
         )
-        self.time_label.pack(pady=(0, 10))  # Padding bottom
+        self.time_label.pack(pady=(0, 5))
+
+        # World Clock Label (Hidden by default, shown via logic)
+        self.world_clock_label = tk.Label(
+            self.root,
+            text="",
+            font=self.world_clock_font,
+            padx=20,
+            pady=0,
+            justify="center"
+        )
+        # We pack it conditionally in update_clock logic to preserve order
+        if self.show_world_clock.get():
+            self.world_clock_label.pack(pady=(0, 10))
 
         # --- Context Menu Construction ---
         self.context_menu = tk.Menu(self.root, tearoff=0)
@@ -106,16 +126,29 @@ class ModernClockWidget:
             variable=self.show_ms
         )
 
+        # 3. Show World Clock
+        self.context_menu.add_checkbutton(
+            label="Show World Clock",
+            variable=self.show_world_clock,
+            command=self.toggle_world_clock_visibility
+        )
+
+        # 4. DST Toggle (New)
+        self.context_menu.add_checkbutton(
+            label="Summer Time (DST)",
+            variable=self.is_dst
+        )
+
         self.context_menu.add_separator()
 
-        # 3. Size Menu (Nested)
+        # 5. Size Menu (Nested)
         self.size_menu = tk.Menu(self.context_menu, tearoff=0)
         self.context_menu.add_cascade(label="Size", menu=self.size_menu)
 
         # Date Size Submenu
         self.date_size_menu = tk.Menu(self.size_menu, tearoff=0)
         self.size_menu.add_cascade(label="Date Size", menu=self.date_size_menu)
-        for label in ["Small (12px)", "Medium (16px)", "Large (24px)", "Largest (32px)"]:
+        for label in ["Tiny (8px)", "Small (12px)", "Medium (16px)", "Large (24px)", "Largest (32px)"]:
             self.date_size_menu.add_radiobutton(
                 label=label,
                 variable=self.date_size_mode,
@@ -126,7 +159,7 @@ class ModernClockWidget:
         # Time Size Submenu
         self.time_size_menu = tk.Menu(self.size_menu, tearoff=0)
         self.size_menu.add_cascade(label="Time Size", menu=self.time_size_menu)
-        for label in ["Small (12px)", "Medium (16px)", "Large (24px)", "Largest (32px)"]:
+        for label in ["Tiny (8px)", "Small (12px)", "Medium (16px)", "Large (24px)", "Largest (32px)"]:
             self.time_size_menu.add_radiobutton(
                 label=label,
                 variable=self.time_size_mode,
@@ -134,7 +167,18 @@ class ModernClockWidget:
                 command=lambda: self.update_font_appearance("time")
             )
 
-        # 4. Font Type Menu
+        # World Clock Size Submenu
+        self.wc_size_menu = tk.Menu(self.size_menu, tearoff=0)
+        self.size_menu.add_cascade(label="World Clock Size", menu=self.wc_size_menu)
+        for label in ["Tiny (8px)", "Small (12px)", "Medium (16px)", "Large (24px)", "Largest (32px)"]:
+            self.wc_size_menu.add_radiobutton(
+                label=label,
+                variable=self.world_clock_size_mode,
+                value=label,
+                command=lambda: self.update_font_appearance("world")
+            )
+
+        # 6. Font Type Menu
         self.font_menu = tk.Menu(self.context_menu, tearoff=0)
         self.context_menu.add_cascade(label="Font Type", menu=self.font_menu)
 
@@ -148,14 +192,14 @@ class ModernClockWidget:
                 command=lambda: self.update_font_appearance("both")
             )
 
-        # 5. Format Menu
+        # 7. Format Menu
         self.format_menu = tk.Menu(self.context_menu, tearoff=0)
         self.context_menu.add_cascade(label="Format", menu=self.format_menu)
         formats = [("Default (Ordinal)", 0), ("ISO (YYYY-MM-DD)", 1), ("12-Hour (AM/PM)", 2)]
         for label, val in formats:
             self.format_menu.add_radiobutton(label=label, variable=self.format_mode, value=val)
 
-        # 6. Theme Menu
+        # 8. Theme Menu
         self.theme_menu = tk.Menu(self.context_menu, tearoff=0)
         self.context_menu.add_cascade(label="Theme", menu=self.theme_menu)
         for theme_name in self.themes:
@@ -166,11 +210,12 @@ class ModernClockWidget:
                 command=self.apply_theme
             )
 
-        # 7. Transparency Menu
+        # 9. Transparency Menu
         self.alpha_menu = tk.Menu(self.context_menu, tearoff=0)
         self.context_menu.add_cascade(label="Transparency", menu=self.alpha_menu)
 
-        opacity_levels = [("25% (Ghost)", 0.25), ("50%", 0.50), ("75%", 0.75), ("100% (Solid)", 1.0)]
+        opacity_levels = [("40% (Ghost)", 0.4), ("50%", 0.50), ("65%", 0.65), ("75%", 0.75), ("85%", 0.85),
+                          ("100% (Solid)", 1.0)]
         for label, val in opacity_levels:
             self.alpha_menu.add_radiobutton(
                 label=label,
@@ -183,8 +228,7 @@ class ModernClockWidget:
         self.context_menu.add_command(label="Close", command=self.close_app)
 
         # --- Mouse Bindings ---
-        # Bind events to all widgets so dragging works anywhere
-        for widget in [self.root, self.date_label, self.time_label]:
+        for widget in [self.root, self.date_label, self.time_label, self.world_clock_label]:
             widget.bind('<Button-1>', self.start_move)
             widget.bind('<B1-Motion>', self.do_move)
             widget.bind('<Button-3>', self.show_context_menu)
@@ -220,6 +264,9 @@ class ModernClockWidget:
             "format": self.format_mode.get(),
             "date_size": self.date_size_mode.get(),
             "time_size": self.time_size_mode.get(),
+            "world_clock_size": self.world_clock_size_mode.get(),
+            "show_world_clock": self.show_world_clock.get(),
+            "is_dst": self.is_dst.get(),
             "font_family": self.font_family_var.get(),
             "x": self.root.winfo_x(),
             "y": self.root.winfo_y()
@@ -232,7 +279,6 @@ class ModernClockWidget:
 
     # --- Logic Methods ---
     def apply_transparency(self):
-        """Updates window opacity based on selection."""
         self.root.attributes('-alpha', self.alpha_value.get())
 
     def apply_theme(self):
@@ -242,9 +288,9 @@ class ModernClockWidget:
         self.root.configure(bg=bg)
         self.date_label.configure(bg=bg, fg=fg)
         self.time_label.configure(bg=bg, fg=fg)
+        self.world_clock_label.configure(bg=bg, fg=fg)
 
     def update_font_appearance(self, target="both"):
-        """Updates font family and sizes dynamically."""
         family = self.font_family_var.get()
 
         if target == "date" or target == "both":
@@ -254,6 +300,16 @@ class ModernClockWidget:
         if target == "time" or target == "both":
             t_size = self.size_map.get(self.time_size_mode.get(), 18)
             self.time_font.configure(family=family, size=t_size)
+
+        if target == "world" or target == "both":
+            w_size = self.size_map.get(self.world_clock_size_mode.get(), 12)
+            self.world_clock_font.configure(family=family, size=w_size)
+
+    def toggle_world_clock_visibility(self):
+        if self.show_world_clock.get():
+            self.world_clock_label.pack(pady=(0, 10))
+        else:
+            self.world_clock_label.pack_forget()
 
     def get_ordinal_date(self, dt):
         day = dt.day
@@ -269,32 +325,24 @@ class ModernClockWidget:
             mode = self.format_mode.get()
             show_ms = self.show_ms.get()
 
-            # 3 digits (divided by 1000)
+            # --- Main Clock Logic ---
             ms_digit = str(now.microsecond // 1000).zfill(3)
 
-            if mode == 0:
-                # Default
+            if mode == 0:  # Default
                 day_str = self.get_ordinal_date(now)
-                day_date = now.strftime("%a")
                 month_str = now.strftime("%b")
                 year_str = now.strftime("%Y")
-                date_line = f"{day_date}, {day_str} {month_str} {year_str}"
-
+                date_line = f"{day_str} {month_str} {year_str}"
                 time_line = now.strftime("%H:%M:%S")
                 if show_ms: time_line += f":{ms_digit}"
-
-            elif mode == 1:
-                # ISO
+            elif mode == 1:  # ISO
                 date_line = now.strftime("%Y-%m-%d")
                 time_line = now.strftime("%H:%M:%S")
                 if show_ms: time_line += f".{ms_digit}"
-
-            elif mode == 2:
-                # 12-Hour
+            elif mode == 2:  # 12-Hour
                 date_line = now.strftime("%a, %b %d %Y")
                 time_part = now.strftime("%I:%M:%S")
                 ampm_part = now.strftime("%p")
-
                 if show_ms:
                     time_line = f"{time_part}.{ms_digit} {ampm_part}"
                 else:
@@ -303,21 +351,37 @@ class ModernClockWidget:
             self.date_label.config(text=date_line)
             self.time_label.config(text=time_line)
 
-            # Faster update rate for 3-digit smoothness
+            # --- World Clock Logic ---
+            if self.show_world_clock.get():
+                utc_now = datetime.now(timezone.utc)
+                dst_active = self.is_dst.get()
+
+                # Manual Offsets
+                # London: Winter UTC+0, Summer UTC+1
+                london_offset = 1 if dst_active else 0
+                london_time = utc_now + timedelta(hours=london_offset)
+
+                # Pune: Always UTC+5:30
+                pune_time = utc_now + timedelta(hours=5, minutes=30)
+
+                # New York: Winter UTC-5, Summer UTC-4
+                ny_offset = -4 if dst_active else -5
+                ny_time = utc_now + timedelta(hours=ny_offset)
+
+                wc_str = f"LON {london_time.strftime('%H:%M')} | PUNE {pune_time.strftime('%H:%M')} | NY {ny_time.strftime('%H:%M')}"
+                self.world_clock_label.config(text=wc_str)
+
             self.after_id = self.root.after(10, self.update_clock)
         except (tk.TclError, RuntimeError):
-            # Widget destroyed
             pass
 
     def toggle_topmost(self):
         self.root.attributes('-topmost', self.is_topmost.get())
 
     def show_context_menu(self, event):
-        # Using tk_popup fixes the flashing issue on Windows
         try:
             self.context_menu.tk_popup(event.x_root, event.y_root)
         except tk.TclError:
-            # Application destroyed while menu was trying to open
             pass
         finally:
             try:
@@ -337,7 +401,7 @@ class ModernClockWidget:
         self.root.geometry(f"+{x}+{y}")
 
     def close_app(self):
-        self.save_settings()  # Save on close
+        self.save_settings()
         if hasattr(self, 'after_id'):
             self.root.after_cancel(self.after_id)
         self.root.destroy()
